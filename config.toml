@@ -1,0 +1,9 @@
+llm_api_key = ""
+llm_api_base = ""
+llm_model = ""
+redis_url = ""
+bot_token = ""
+password = ""
+context_length = 0
+log_level = ""
+system_prompt = """"""
