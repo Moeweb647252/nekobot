@@ -58,15 +58,24 @@ async fn handel_completion(
       })
       .collect::<Vec<_>>()),
   );
-  messages.push(
-    ChatCompletionRequestUserMessageArgs::default()
-      .content(msg.msg.as_str())
-      .build()
-      .unwrap()
-      .into(),
-  );
-  db.add_message(msg.chat_id, format!("USER:{}", msg.msg.as_str()))
-    .await?;
+  match msg.msg.as_str() {
+    "/retry" => (),
+    "/regenerate" => {
+      messages.pop();
+      db.pop_message(msg.chat_id).await?;
+    }
+    _ => {
+      messages.push(
+        ChatCompletionRequestUserMessageArgs::default()
+          .content(msg.msg.as_str())
+          .build()
+          .unwrap()
+          .into(),
+      );
+      db.add_message(msg.chat_id, format!("USER:{}", msg.msg.as_str()))
+        .await?;
+    }
+  }
   let openai = openai.clone();
   let mut db = db.clone();
 

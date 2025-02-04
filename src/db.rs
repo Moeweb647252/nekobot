@@ -49,4 +49,8 @@ impl Db {
       .exec_async(&mut self.conn)
       .await
   }
+
+  pub async fn pop_message(&mut self, chat_id: i64) -> Result<Option<String>> {
+    self.conn.lpop(format!("messages:{}", chat_id), None).await
+  }
 }

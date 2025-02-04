@@ -37,6 +37,11 @@ system_prompt = """"""
 cargo build --release
 ```
 
+## Command
+
+/retry : retry to generate completion
+/regenerate : regenerate 
+
 ## License
 
 MIT
