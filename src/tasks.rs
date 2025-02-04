@@ -38,26 +38,19 @@ async fn handel_completion(
       .1
       .to_vec();
   }
-  messages.append(
-    &mut (messages_history
-      .into_iter()
-      .map(|m| {
-        let message = parse_message(&m);
-        match message {
-          Message::User(text) => ChatCompletionRequestUserMessageArgs::default()
-            .content(text)
-            .build()
-            .unwrap()
-            .into(),
-          Message::Assitant(text) => ChatCompletionRequestAssistantMessageArgs::default()
-            .content(text)
-            .build()
-            .unwrap()
-            .into(),
-        }
-      })
-      .collect::<Vec<_>>()),
-  );
+  for i in messages_history.into_iter() {
+    let message = parse_message(&i);
+    messages.push(match message {
+      Message::User(text) => ChatCompletionRequestUserMessageArgs::default()
+        .content(text)
+        .build()?
+        .into(),
+      Message::Assitant(text) => ChatCompletionRequestAssistantMessageArgs::default()
+        .content(text)
+        .build()?
+        .into(),
+    });
+  }
   match msg.msg.as_str() {
     "/retry" => (),
     "/regenerate" => {
@@ -68,8 +61,7 @@ async fn handel_completion(
       messages.push(
         ChatCompletionRequestUserMessageArgs::default()
           .content(msg.msg.as_str())
-          .build()
-          .unwrap()
+          .build()?
           .into(),
       );
       db.add_message(msg.chat_id, format!("USER:{}", msg.msg.as_str()))
@@ -82,10 +74,9 @@ async fn handel_completion(
   let request = async_openai::types::CreateChatCompletionRequestArgs::default()
     .model(CONFIG.llm_model.as_str())
     .messages(messages)
-    .build()
-    .unwrap();
+    .build()?;
   debug!("Sending request: {:?}", request);
-  let response = openai.chat().create(request).await.unwrap();
+  let response = openai.chat().create(request).await?;
   if let Some(response) = response.choices.first() {
     let resp = response.message.content.clone().unwrap_or_default();
     db.add_message(msg.chat_id, format!("ASSISTANT:{}", resp.as_str()))

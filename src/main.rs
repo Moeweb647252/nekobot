@@ -5,6 +5,7 @@ use redis::aio::MultiplexedConnection;
 use std::sync::LazyLock;
 use std::{ops::Deref, sync::Arc};
 use tasks::openai_task;
+use teloxide::types::BotCommand;
 use teloxide::{dispatching::dialogue::GetChatId, prelude::*};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -46,6 +47,19 @@ async fn main() {
   log::info!("Starting nekobot...");
 
   let bot = Bot::new(CONFIG.bot_token.as_str());
+  bot
+    .set_my_commands(vec![
+      BotCommand {
+        command: "retry".to_owned(),
+        description: "Retry to generate a response".to_owned(),
+      },
+      BotCommand {
+        command: "regenerate".to_owned(),
+        description: "Regenerate last message".to_owned(),
+      },
+    ])
+    .await
+    .unwrap();
   let redis = redis::Client::open(CONFIG.redis_url.as_str()).unwrap();
   let conn = redis.get_multiplexed_async_connection().await.unwrap();
   let (tx, rx) = mpsc::unbounded_channel();
