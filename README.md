@@ -14,6 +14,10 @@ A Telegram chatbot.
 nekobot -c config.toml
 ```
 
+## Authentication
+
+Directly send password to bot
+
 ### Configuration
 
 Create a `config.toml` file with:
