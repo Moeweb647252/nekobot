@@ -1,10 +1,24 @@
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-pub struct Config {
+pub struct Text {
   pub llm_api_key: String,
   pub llm_api_base: String,
   pub llm_model: String,
+}
+
+#[derive(Deserialize)]
+pub struct Image {
+  pub llm_api_key: String,
+  pub llm_api_base: String,
+  pub llm_model: String,
+  pub provider: String,
+}
+
+#[derive(Deserialize)]
+pub struct Config {
+  pub text: Text,
+  pub image: Option<Image>,
   pub redis_url: String,
   pub bot_token: String,
   pub system_prompt: String,

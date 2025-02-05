@@ -4,11 +4,10 @@ use log::info;
 use redis::aio::MultiplexedConnection;
 use std::sync::LazyLock;
 use std::{ops::Deref, sync::Arc};
-use tasks::openai_task;
+use tasks::{ai_task, CompletionTask};
 use teloxide::types::BotCommand;
 use teloxide::{dispatching::dialogue::GetChatId, prelude::*};
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 
 mod config;
 mod db;
@@ -34,12 +33,6 @@ static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
   config::Config::from_file(&args.config)
 });
 
-struct CompletionTask {
-  chat_id: i64,
-  msg: String,
-  sender: oneshot::Sender<anyhow::Result<String>>,
-}
-
 #[tokio::main]
 async fn main() {
   std::env::set_var("RUST_LOG", CONFIG.log_level.as_str());
@@ -64,7 +57,7 @@ async fn main() {
   let conn = redis.get_multiplexed_async_connection().await.unwrap();
   let (tx, rx) = mpsc::unbounded_channel();
   let db = Db { conn: conn.clone() };
-  openai_task(rx, db);
+  ai_task(rx, db);
   let handler = Update::filter_message().endpoint(
     |bot: Bot,
      conn: Arc<MultiplexedConnection>,
@@ -72,7 +65,8 @@ async fn main() {
      msg: teloxide::prelude::Message| async move {
       let mut db = Db::from(conn);
       let tx = tx.deref().clone();
-      log::info!("Received message: {:?}", msg);
+      log::debug!("Received message: {:?}", msg);
+      log::info!("Received message from: {:?}", msg.from);
       if let Some(user) = &msg.from {
         if let Some(chat_id) = msg.chat_id() {
           if db.check_user(user.id.0).await.unwrap() {

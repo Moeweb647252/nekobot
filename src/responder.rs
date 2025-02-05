@@ -1,4 +1,3 @@
-use crate::CompletionTask;
 use log::error;
 use teloxide::types::ChatAction;
 use teloxide::{
@@ -8,6 +7,8 @@ use teloxide::{
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+
+use crate::tasks::{CompletionTask, CompletionType};
 
 pub async fn user_respond(
   bot: Bot,
@@ -37,7 +38,7 @@ pub async fn user_respond(
 
   let task = CompletionTask {
     chat_id,
-    msg: to_send,
+    data: CompletionType::Text { msg: to_send },
     sender,
   };
 
