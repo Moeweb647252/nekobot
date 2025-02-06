@@ -53,4 +53,24 @@ impl Db {
   pub async fn pop_message(&mut self, chat_id: i64) -> Result<Option<String>> {
     self.conn.lpop(format!("messages:{}", chat_id), None).await
   }
+
+  pub async fn increase_token(
+    &mut self,
+    user_id: u64,
+    completion_tokens: usize,
+    prompt_tokens: usize,
+  ) -> Result<()> {
+    redis::cmd("HINCRBY")
+      .arg(format!("users:{}", user_id))
+      .arg("completion_tokens")
+      .arg(completion_tokens)
+      .exec_async(&mut self.conn)
+      .await?;
+    redis::cmd("HINCRBY")
+      .arg(format!("users:{}", user_id))
+      .arg("prompt_tokens")
+      .arg(prompt_tokens)
+      .exec_async(&mut self.conn)
+      .await
+  }
 }

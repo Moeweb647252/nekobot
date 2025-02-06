@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-use log::debug;
+use anyhow::Context;
+use log::{debug, info};
 use reqwest::Proxy;
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::CONFIG;
 
@@ -121,8 +121,8 @@ pub struct Response {
   created: i64,
   id: String,
   model: String,
-  object: String,
-  usage: Usage,
+  object: Option<String>,
+  usage: Option<Usage>,
 }
 
 impl OpenAI {
@@ -149,7 +149,7 @@ impl OpenAI {
 }
 
 impl TextProvider for OpenAI {
-  async fn completion(&self, msg: Vec<Message>) -> anyhow::Result<String> {
+  async fn completion(&self, msg: Vec<Message>) -> anyhow::Result<(String, Option<super::Usage>)> {
     let messages = msg
       .into_iter()
       .map(|msg| match msg {
@@ -184,11 +184,26 @@ impl TextProvider for OpenAI {
       .text()
       .await?;
     debug!("Response: {}", &response);
-    Ok(
-      serde_json::from_str::<Value>(&response)?["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default()
+    let response = serde_json::from_str::<Response>(&response)?;
+    if let Some(usage) = &response.usage {
+      info!(
+        "Tokens: {}, Prompt tokens: {}, Total tokens: {}",
+        usage.completion_tokens, usage.prompt_tokens, usage.total_tokens
+      );
+    }
+    let usage = response.usage.map(|usage| super::Usage {
+      completion: usage.completion_tokens as usize,
+      prompt: usage.prompt_tokens as usize,
+    });
+    Ok((
+      response
+        .choices
+        .first()
+        .context("Invalid response")?
+        .message
+        .content
         .to_string(),
-    )
+      usage,
+    ))
   }
 }

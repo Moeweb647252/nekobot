@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use crate::db;
 use crate::providers::Message;
 use crate::providers::TextProvider;
@@ -16,6 +19,7 @@ pub enum CompletionType {
 
 pub struct CompletionTask {
   pub chat_id: i64,
+  pub user_id: u64,
   pub data: CompletionType,
   pub sender: oneshot::Sender<anyhow::Result<String>>,
 }
@@ -73,7 +77,11 @@ async fn handel_text_completion(
     }
   }
   let mut db = db.clone();
-  let response = provider.completion(messages).await?;
+  let (response, usage) = provider.completion(messages).await?;
+  if let Some(usage) = usage {
+    db.increase_token(msg.user_id, usage.completion, usage.prompt)
+      .await?;
+  }
   db.add_message(msg.chat_id, format!("ASSISTANT:{}", response.as_str()))
     .await?;
   Ok(response)

@@ -13,7 +13,7 @@ use crate::tasks::{CompletionTask, CompletionType};
 pub async fn user_respond(
   bot: Bot,
   tx: mpsc::UnboundedSender<CompletionTask>,
-  _user_id: u64,
+  user_id: u64,
   msg: Message,
   chat_id: i64,
 ) {
@@ -38,6 +38,7 @@ pub async fn user_respond(
 
   let task = CompletionTask {
     chat_id,
+    user_id,
     data: CompletionType::Text { msg: to_send },
     sender,
   };

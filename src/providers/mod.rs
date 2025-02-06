@@ -12,10 +12,15 @@ pub enum Message {
   System(String),
 }
 
+pub struct Usage {
+  pub completion: usize,
+  pub prompt: usize,
+}
+
 #[trait_variant::make(SendSyncTextProvider: Send + Sync)]
 #[dynosaur::dynosaur(_DynTextProvider = dyn SendSyncTextProvider)]
 pub trait _TextProvider {
-  async fn completion(&self, msg: Vec<Message>) -> anyhow::Result<String>;
+  async fn completion(&self, msg: Vec<Message>) -> anyhow::Result<(String, Option<Usage>)>;
 }
 
 #[dynosaur::dynosaur(_DynImageProvider)]
