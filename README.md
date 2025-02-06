@@ -28,6 +28,7 @@ password = ""
 context_length = 0
 log_level = ""
 system_prompt = """"""
+enable_msg = ""
 
 [bot]
 token = ""

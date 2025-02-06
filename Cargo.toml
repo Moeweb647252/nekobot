@@ -17,3 +17,11 @@ teloxide = { version = "0.13.0", features = ["macros"] }
 tokio = { version = "1.43.0", features = ["full"] }
 toml = "0.8.20"
 trait-variant = "0.1.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+debug = false
+strip = true
+codegen-units = 1
+panic = "abort"

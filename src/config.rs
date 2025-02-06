@@ -32,12 +32,16 @@ pub struct Bot {
 pub struct Config {
   pub text: Text,
   pub image: Option<Image>,
+  pub enable_msg: String,
   pub redis_url: String,
   pub bot: Bot,
   pub system_prompt: String,
   pub password: String,
   pub context_length: usize,
   pub log_level: String,
+  #[serde(default)]
+  pub concurrency: usize,
+  pub queuing_msg: Option<String>,
 }
 
 impl Config {

@@ -2,6 +2,7 @@ use clap::Parser;
 use db::Db;
 use log::info;
 use redis::aio::MultiplexedConnection;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::{ops::Deref, sync::Arc};
 use tasks::{ai_task, CompletionTask};
@@ -33,6 +34,8 @@ static CONFIG: LazyLock<config::Config> = LazyLock::new(|| {
   let args = Args::parse();
   config::Config::from_file(&args.config)
 });
+
+static QUEUE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 #[tokio::main]
 async fn main() {
@@ -72,11 +75,28 @@ async fn main() {
         if let Some(chat_id) = msg.chat_id() {
           if db.check_user(user.id.0).await.unwrap() {
             log::info!("Responding to {}", user.id.0);
-            responder::user_respond(bot, tx, user.id.0, msg, chat_id.0).await
+            if QUEUE_SIZE.load(Ordering::Acquire) < CONFIG.concurrency || CONFIG.concurrency == 0 {
+              QUEUE_SIZE.fetch_add(1, Ordering::AcqRel);
+              responder::user_respond(bot, tx, user.id.0, msg, chat_id.0).await;
+              QUEUE_SIZE.fetch_sub(1, Ordering::AcqRel);
+            } else {
+              bot
+                .send_message(
+                  chat_id,
+                  CONFIG
+                    .queuing_msg
+                    .as_ref()
+                    .map(|v| &v[..])
+                    .unwrap_or("Queue is full, please try again later."),
+                )
+                .await?;
+            }
           } else if msg.text().unwrap_or("").eq(CONFIG.password.as_str()) {
             info!("User {} enabled", user.id.0);
             db.enable_user(user.id.0).await.unwrap();
-            bot.send_message(chat_id, "猫猫激活成功!").await.unwrap();
+            bot
+              .send_message(chat_id, CONFIG.enable_msg.as_str())
+              .await?;
           }
         }
       }
