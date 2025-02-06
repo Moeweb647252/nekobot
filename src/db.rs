@@ -1,5 +1,5 @@
-use std::ops::Deref;
 use std::sync::Arc;
+use std::{num::NonZero, ops::Deref};
 
 use redis::{aio::MultiplexedConnection, AsyncCommands, RedisError};
 
@@ -51,7 +51,13 @@ impl Db {
   }
 
   pub async fn pop_message(&mut self, chat_id: i64) -> Result<Option<String>> {
-    self.conn.lpop(format!("messages:{}", chat_id), None).await
+    self
+      .conn
+      .lpop(
+        format!("messages:{}", chat_id),
+        Some(NonZero::new(1).unwrap()),
+      )
+      .await
   }
 
   pub async fn increase_token(
