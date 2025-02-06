@@ -23,17 +23,29 @@ Directly send password to bot
 Create a `config.toml` file with:
 
 ```toml
-llm_api_key = ""
-llm_api_base = ""
-llm_model = ""
 redis_url = ""
-bot_token = ""
 password = ""
 context_length = 0
 log_level = ""
 system_prompt = """"""
 
+[bot]
+token = ""
+proxy = "" (optional)
+
+[text]
+api_key = ""
+api_base = ""
+model = ""
+provider = "" 
+proxy = "" (optional)
+temperature = 0.0
+max_tokens = 0
+top_p = 0.0
+
 ```
+
+Provider: openai for openai-compatible apis
 
 ## Building
 

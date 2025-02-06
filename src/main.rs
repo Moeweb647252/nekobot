@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 mod config;
 mod db;
+mod providers;
 mod responder;
 mod tasks;
 
@@ -39,7 +40,7 @@ async fn main() {
   pretty_env_logger::init();
   log::info!("Starting nekobot...");
 
-  let bot = Bot::new(CONFIG.bot_token.as_str());
+  let bot = CONFIG.bot.make_bot();
   bot
     .set_my_commands(vec![
       BotCommand {
