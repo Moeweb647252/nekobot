@@ -1,6 +1,6 @@
 use clap::Parser;
 use db::Db;
-use log::{debug, info};
+use log::info;
 use redis::aio::MultiplexedConnection;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
@@ -61,7 +61,7 @@ async fn main() {
     ])
     .await
     .unwrap();
-  let redis = redis::Client::open(CONFIG.redis_url.as_str()).unwrap();
+  let redis = redis::Client::open(CONFIG.redis_url.as_str()).expect("Failed to connect to redis");
   let conn = redis.get_multiplexed_async_connection().await.unwrap();
   let (tx, rx) = mpsc::unbounded_channel();
   let db = Db { conn: conn.clone() };

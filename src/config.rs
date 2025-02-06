@@ -29,6 +29,17 @@ pub struct Bot {
 }
 
 #[derive(Deserialize)]
+pub struct OpenRouter {
+  pub order: Vec<String>,
+  pub allow_fallback: Option<bool>,
+  pub sort: Option<String>,
+  pub quantizations: Option<Vec<String>>,
+  pub allow_fallbacks: Option<bool>,
+  pub ignore: Option<Vec<String>>,
+  pub require_parameters: Option<bool>,
+}
+
+#[derive(Deserialize)]
 pub struct Config {
   pub text: Text,
   pub image: Option<Image>,
@@ -44,6 +55,7 @@ pub struct Config {
   #[serde(default)]
   pub concurrency: usize,
   pub queuing_msg: Option<String>,
+  pub open_router: Option<OpenRouter>,
 }
 
 impl Config {

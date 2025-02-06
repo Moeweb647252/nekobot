@@ -9,6 +9,17 @@ use crate::CONFIG;
 
 use super::{Message, TextProvider};
 
+fn open_router_data_collection_serialize<S>(v: &Option<bool>, s: S) -> Result<S::Ok, S::Error>
+where
+  S: serde::Serializer,
+{
+  if let Some(v) = v {
+    s.serialize_str(if *v { "allow" } else { "deny" })
+  } else {
+    s.serialize_str("allow")
+  }
+}
+
 #[derive(Clone)]
 pub struct OpenAI {
   api_key: String,
@@ -51,6 +62,27 @@ pub struct Payload {
   pub tools: Option<PayloadTools>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub tool_choice: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[serde(rename = "provider")]
+  pub open_router_provider: Option<String>,
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct OpenRouterProvider {
+  order: Vec<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  allow_fallback: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  sort: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  quantizations: Option<Vec<String>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  ignore: Option<Vec<String>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[serde(serialize_with = "open_router_data_collection_serialize")]
+  data_collection: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  require_parameters: Option<bool>,
 }
 
 #[derive(serde::Serialize, Debug)]
