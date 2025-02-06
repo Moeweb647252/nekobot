@@ -29,6 +29,10 @@ context_length = 0
 log_level = ""
 system_prompt = """"""
 enable_msg = ""
+reset_msg = ""
+quening_msg = ""
+concurrency = 0
+
 
 [bot]
 token = ""

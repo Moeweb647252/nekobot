@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+use crate::config;
 use crate::db;
 use crate::providers::Message;
 use crate::providers::TextProvider;
@@ -69,6 +70,10 @@ async fn handel_text_completion(
     "/regenerate" => {
       messages.pop();
       db.pop_message(msg.chat_id).await?;
+    }
+    "/reset" => {
+      db.clear_messages(msg.chat_id).await?;
+      return Ok(CONFIG.reset_msg.clone());
     }
     _ => {
       messages.push(Message::User(to_send.to_string()));

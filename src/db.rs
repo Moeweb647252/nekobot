@@ -79,4 +79,11 @@ impl Db {
       .exec_async(&mut self.conn)
       .await
   }
+
+  pub async fn clear_messages(&mut self, chat_id: i64) -> Result<()> {
+    redis::cmd("DEL")
+      .arg(format!("messages:{}", chat_id))
+      .exec_async(&mut self.conn)
+      .await
+  }
 }

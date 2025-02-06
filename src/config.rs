@@ -33,6 +33,8 @@ pub struct Config {
   pub text: Text,
   pub image: Option<Image>,
   pub enable_msg: String,
+  pub start_msg: String,
+  pub reset_msg: String,
   pub redis_url: String,
   pub bot: Bot,
   pub system_prompt: String,

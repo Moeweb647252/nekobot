@@ -1,6 +1,6 @@
 use clap::Parser;
 use db::Db;
-use log::info;
+use log::{debug, info};
 use redis::aio::MultiplexedConnection;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
@@ -54,6 +54,10 @@ async fn main() {
         command: "regenerate".to_owned(),
         description: "Regenerate last message".to_owned(),
       },
+      BotCommand {
+        command: "reset".to_owned(),
+        description: "Reset the conversation".to_owned(),
+      },
     ])
     .await
     .unwrap();
@@ -73,6 +77,12 @@ async fn main() {
       log::info!("Received message from: {:?}", msg.from);
       if let Some(user) = &msg.from {
         if let Some(chat_id) = msg.chat_id() {
+          if let Some(text) = msg.text() {
+            if text.eq("/start") {
+              bot.send_message(chat_id, CONFIG.start_msg.as_str()).await?;
+              return respond(());
+            }
+          }
           if db.check_user(user.id.0).await.unwrap() {
             log::info!("Responding to {}", user.id.0);
             if QUEUE_SIZE.load(Ordering::Acquire) < CONFIG.concurrency || CONFIG.concurrency == 0 {
