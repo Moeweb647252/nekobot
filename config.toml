@@ -8,6 +8,7 @@ enable_msg = ""
 start_msg = ""
 reset_msg = ""
 queuing_msg = ""
+error_msg = ""
 
 [bot]
 token = ""

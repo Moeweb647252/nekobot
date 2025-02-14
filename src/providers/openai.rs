@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::CONFIG;
 
-use super::{Message, TextProvider};
+use super::{Message, TextToTextProvider};
 
 fn open_router_data_collection_serialize<S>(v: &Option<bool>, s: S) -> Result<S::Ok, S::Error>
 where
@@ -195,7 +195,7 @@ impl OpenAI {
   }
 }
 
-impl TextProvider for OpenAI {
+impl TextToTextProvider for OpenAI {
   async fn completion(&self, msg: Vec<Message>) -> anyhow::Result<(String, Option<super::Usage>)> {
     let messages = msg
       .into_iter()

@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
+use bytes::{BufMut, BytesMut};
 use log::error;
-use teloxide::types::ChatAction;
+use teloxide::net::Download;
+use teloxide::types::{ChatAction, PhotoSize};
 use teloxide::{
   prelude::{Request, Requester},
   types::{ChatId, Message},
@@ -9,6 +13,20 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::tasks::{CompletionTask, CompletionType};
+use crate::CONFIG;
+
+async fn image_process(
+  bot: Bot,
+  photo: PhotoSize,
+  tx: mpsc::UnboundedSender<CompletionTask>,
+) -> anyhow::Result<String> {
+  let file = bot.get_file(photo.file.id).await?;
+  let mut buf = Cursor::new(Vec::new());
+  bot.download_file(&file.path, &mut buf).await?;
+  let buf = buf.into_inner();
+
+  todo!()
+}
 
 pub async fn user_respond(
   bot: Bot,
@@ -30,12 +48,18 @@ pub async fn user_respond(
   }
 
   let (sender, mut receiver) = tokio::sync::oneshot::channel();
+  if let Some(images) = msg.photo() {
+    for image in images.into_iter() {}
+  }
   let to_send = if let Some(reply_to) = msg.reply_to_message() {
-    format!("Reply to: ```\n{}\n```", reply_to.text().unwrap_or(""))
+    format!(
+      "Reply to: ```\n{}\n```\n{}",
+      reply_to.text().unwrap_or(""),
+      msg.text().unwrap_or("")
+    )
   } else {
     msg.text().unwrap_or("").to_string()
   };
-
   let task = CompletionTask {
     chat_id,
     user_id,
@@ -63,7 +87,7 @@ pub async fn user_respond(
                 Ok(r) => r,
                 Err(e) => {
                     error!("Response channel closed unexpectedly (chat_id: {}): {:?}", chat_id, e);
-                    break Ok("猫猫出了点问题，等会再试试吧~".to_string());
+                    break Ok(CONFIG.error_msg.clone());
                 }
             };
         }
@@ -77,7 +101,7 @@ pub async fn user_respond(
     }
     Err(e) => {
       bot
-        .send_message(ChatId(chat_id), "猫猫出了点问题，等会再试试吧~")
+        .send_message(ChatId(chat_id), CONFIG.error_msg.as_str())
         .send()
         .await
         .ok();

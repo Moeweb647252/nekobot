@@ -4,8 +4,8 @@
 use crate::config;
 use crate::db;
 use crate::providers::Message;
-use crate::providers::TextProvider;
-use crate::providers::{DynImageProvider, DynTextProvider};
+use crate::providers::TextToTextProvider;
+use crate::providers::{DynImageToTextProvider, DynTextToTextProvider};
 use crate::CONFIG;
 use anyhow::Context;
 use log::debug;
@@ -46,7 +46,7 @@ fn parse_message(msg: &str) -> anyhow::Result<Message> {
 async fn handel_text_completion(
   msg: &CompletionTask,
   mut db: db::Db,
-  provider: Arc<DynTextProvider<'_>>,
+  provider: Arc<DynTextToTextProvider<'_>>,
 ) -> anyhow::Result<String> {
   let to_send = match &msg.data {
     CompletionType::Text { msg } => msg,
@@ -94,7 +94,7 @@ async fn handel_text_completion(
 
 pub fn ai_task(mut rx: mpsc::UnboundedReceiver<CompletionTask>, db: db::Db) {
   tokio::spawn(async move {
-    let text_provider: Arc<DynTextProvider> = Arc::from(CONFIG.text.make_provider());
+    let text_provider: Arc<DynTextToTextProvider> = Arc::from(CONFIG.text.make_provider());
     while let Some(msg) = rx.recv().await {
       let text_provider = text_provider.clone();
       let db = db.clone();

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use serde::Deserialize;
 
-use crate::providers::{DynTextProvider, OpenAI};
+use crate::providers::{DynTextToTextProvider, OpenAI};
 
 #[derive(Deserialize)]
 pub struct Text {
@@ -46,6 +46,7 @@ pub struct Config {
   pub enable_msg: String,
   pub start_msg: String,
   pub reset_msg: String,
+  pub error_msg: String,
   pub redis_url: String,
   pub bot: Bot,
   pub system_prompt: String,
@@ -65,9 +66,9 @@ impl Config {
 }
 
 impl Text {
-  pub fn make_provider(&self) -> Box<DynTextProvider> {
+  pub fn make_provider(&self) -> Box<DynTextToTextProvider> {
     match self.provider.to_lowercase().as_str() {
-      "openai" => DynTextProvider::boxed(
+      "openai" => DynTextToTextProvider::boxed(
         OpenAI::new(
           self.api_key.clone(),
           self.api_base.clone(),
