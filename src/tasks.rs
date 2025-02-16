@@ -13,16 +13,22 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-pub enum CompletionType {
-  Text { msg: String },
-  Image { data: Vec<u8> },
+pub enum Completion {
+  TextToText { msg: String },
+  ImageToText { data: Vec<u8> },
+  TextToImage { msg: String },
+}
+
+pub enum CompletionResponse {
+  Text(String),
+  Image(Vec<u8>),
 }
 
 pub struct CompletionTask {
   pub chat_id: i64,
   pub user_id: u64,
-  pub data: CompletionType,
-  pub sender: oneshot::Sender<anyhow::Result<String>>,
+  pub data: Completion,
+  pub sender: oneshot::Sender<anyhow::Result<CompletionResponse>>,
 }
 
 fn parse_message(msg: &str) -> anyhow::Result<Message> {
@@ -49,7 +55,7 @@ async fn handel_text_completion(
   provider: Arc<DynTextToTextProvider<'_>>,
 ) -> anyhow::Result<String> {
   let to_send = match &msg.data {
-    CompletionType::Text { msg } => msg,
+    Completion::TextToText { msg } => msg,
     _ => return Err(anyhow::anyhow!("Invalid data type")),
   };
   debug!("Starting task for {}", msg.chat_id);
@@ -100,8 +106,8 @@ pub fn ai_task(mut rx: mpsc::UnboundedReceiver<CompletionTask>, db: db::Db) {
       let db = db.clone();
       tokio::spawn(async move {
         let res = handel_text_completion(&msg, db, text_provider).await;
-        if let Err(e) = msg.sender.send(res) {
-          log::error!("Failed to send response: {:?}", e);
+        if let Err(_) = msg.sender.send(res.map(|v| CompletionResponse::Text(v))) {
+          log::error!("Failed to send response");
         }
       });
     }

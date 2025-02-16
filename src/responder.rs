@@ -12,7 +12,7 @@ use teloxide::{
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::tasks::{CompletionTask, CompletionType};
+use crate::tasks::{Completion, CompletionTask};
 use crate::CONFIG;
 
 async fn image_process(
@@ -63,7 +63,7 @@ pub async fn user_respond(
   let task = CompletionTask {
     chat_id,
     user_id,
-    data: CompletionType::Text { msg: to_send },
+    data: Completion::TextToText { msg: to_send },
     sender,
   };
 
