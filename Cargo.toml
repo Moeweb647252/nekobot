@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = "1.52"
+async-trait = "0.1"
+anyhow = "1.0"
+nekobot-core = { path = "crates/nekobot-core" }
+nekobot-provider = { path = "crates/nekobot-provider" }
+turso = "0.5"
