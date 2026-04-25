@@ -1,5 +1,7 @@
 use core::str;
-use std::fmt::Display;
+use std::{fmt::Display, sync::Arc};
+
+use crate::agent::tool;
 
 pub enum Role {
     User,
@@ -38,6 +40,7 @@ pub struct ChatMessage {
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub system_prompt: String,
+    pub tools: Vec<Arc<dyn tool::Tool>>,
 }
 
 pub struct ChatResponse {

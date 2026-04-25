@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::Runtime;
 use nekobot_channel::Channel;
 use turso::Connection;
@@ -10,7 +12,7 @@ pub struct ChannelContext {
 }
 
 impl ChannelRuntime {
-    pub fn new(channel: Box<dyn Channel>, context: ChannelContext, agent: Agent) -> Self {
+    pub fn new(channel: Box<dyn Channel>, context: ChannelContext, agent: Arc<Agent>) -> Self {
         todo!()
     }
 }
