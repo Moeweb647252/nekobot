@@ -8,4 +8,9 @@ async-trait = "0.1"
 anyhow = "1.0"
 nekobot-core = { path = "crates/nekobot-core" }
 nekobot-provider = { path = "crates/nekobot-provider" }
+nekobot-channel = { path = "crates/nekobot-channel" }
 turso = "0.5"
+serde = "1.0"
+toml = "1.1"
+serde_json = "1.0"
+thiserror = "2.0"
