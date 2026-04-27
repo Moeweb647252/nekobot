@@ -1,10 +1,16 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
+use turso::Connection;
 
 use crate::{
-    agent::middleware::{Middleware, MiddlewareEvent, MiddlewareFlow},
+    agent::{
+        middleware::{AgentActivation, Middleware, MiddlewareEvent, MiddlewareFlow},
+        types::{ChatMessage, ChatMessageContent, ChatRequest, ChatResponse, Role},
+    },
+    entity::message::{Message, Role as MessageRole},
     provider::{ModelOptions, Provider},
+    session::Session as SessionStore,
 };
 
 pub mod middleware;
@@ -13,26 +19,97 @@ pub mod types;
 
 #[derive(Clone)]
 pub struct Context {
-    pub agent_id: String,
+    pub agent_id: i64,
+    pub session_id: i64,
     pub event_sender: Sender<MiddlewareEvent>,
 }
 
 impl Context {
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
+    pub fn agent_id(&self) -> i64 {
+        self.agent_id
+    }
+
+    pub fn session_id(&self) -> i64 {
+        self.session_id
     }
 }
 
-pub struct Agent {
-    pub(crate) id: String,
+#[derive(Clone)]
+pub struct AgentSessionConfig {
+    pub agent_id: i64,
+    pub middlewares: Vec<Arc<dyn Middleware>>,
+    pub provider: Arc<dyn Provider>,
+    pub model_options: ModelOptions,
+}
+
+impl AgentSessionConfig {
+    pub fn new(
+        agent_id: i64,
+        provider: Arc<dyn Provider>,
+        model_options: ModelOptions,
+        middlewares: Vec<Arc<dyn Middleware>>,
+    ) -> Self {
+        Self {
+            agent_id,
+            middlewares,
+            provider,
+            model_options,
+        }
+    }
+}
+
+pub struct AgentSession {
+    pub session_id: i64,
+    pub agent_id: i64,
     pub(crate) middlewares: Vec<Arc<dyn Middleware>>,
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model_options: ModelOptions,
 }
 
-pub enum AgentEvent {}
+impl AgentSession {
+    pub fn new(session_id: i64, config: AgentSessionConfig) -> Self {
+        Self {
+            session_id,
+            agent_id: config.agent_id,
+            middlewares: config.middlewares,
+            provider: config.provider,
+            model_options: config.model_options,
+        }
+    }
 
-impl Agent {
+    pub async fn start(
+        self,
+        app_db: Connection,
+        output_sender: Sender<AgentOutput>,
+    ) -> anyhow::Result<AgentSessionHandle> {
+        let (activation_sender, activation_receiver) = tokio::sync::mpsc::channel(32);
+        let (event_sender, event_receiver) = tokio::sync::mpsc::channel(32);
+        let ctx = Context {
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+            event_sender,
+        };
+
+        self.init(&ctx).await?;
+
+        let session_id = self.session_id;
+        tokio::spawn(async move {
+            self.run_loop(
+                app_db,
+                ctx,
+                activation_receiver,
+                event_receiver,
+                output_sender,
+            )
+            .await;
+        });
+
+        Ok(AgentSessionHandle {
+            session_id,
+            activation_sender,
+        })
+    }
+
     pub async fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         for middleware in &self.middlewares {
             middleware.init(ctx).await?;
@@ -44,9 +121,8 @@ impl Agent {
     pub async fn interact(
         &self,
         ctx: Context,
-        mut request: types::ChatRequest,
-        _event_sender: Option<std::sync::mpsc::Sender<AgentEvent>>,
-    ) -> anyhow::Result<types::ChatResponse> {
+        mut request: ChatRequest,
+    ) -> anyhow::Result<ChatResponse> {
         for (index, middleware) in self.middlewares.iter().enumerate() {
             match middleware.before_chat(&ctx, &mut request).await {
                 Ok(MiddlewareFlow::Continue) => {}
@@ -93,10 +169,144 @@ impl Agent {
         Ok(response)
     }
 
+    async fn run_loop(
+        self,
+        app_db: Connection,
+        ctx: Context,
+        mut activation_receiver: Receiver<AgentActivation>,
+        mut event_receiver: Receiver<MiddlewareEvent>,
+        output_sender: Sender<AgentOutput>,
+    ) {
+        let mut activation_open = true;
+        let mut event_open = true;
+
+        while activation_open || event_open {
+            tokio::select! {
+                activation = activation_receiver.recv(), if activation_open => {
+                    match activation {
+                        Some(activation) => {
+                            let _ = self
+                                .handle_activation(&app_db, ctx.clone(), activation, &output_sender)
+                                .await;
+                        }
+                        None => {
+                            activation_open = false;
+                        }
+                    }
+                }
+                event = event_receiver.recv(), if event_open => {
+                    match event {
+                        Some(event) => {
+                            let _ = self
+                                .handle_activation(
+                                    &app_db,
+                                    ctx.clone(),
+                                    AgentActivation::Middleware(event),
+                                    &output_sender,
+                                )
+                                .await;
+                        }
+                        None => {
+                            event_open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_activation(
+        &self,
+        app_db: &Connection,
+        ctx: Context,
+        activation: AgentActivation,
+        output_sender: &Sender<AgentOutput>,
+    ) -> anyhow::Result<()> {
+        let session = SessionStore {
+            session_id: self.session_id,
+            app_db: app_db.clone(),
+        };
+
+        let should_interact = match activation {
+            AgentActivation::ChannelMessage { content, .. } => {
+                session
+                    .add_message(MessageRole::User.to_string(), content, None)
+                    .await?;
+                true
+            }
+            AgentActivation::Middleware(event) => {
+                self.handle_middleware_event(&session, event).await?
+            }
+        };
+
+        if !should_interact {
+            return Ok(());
+        }
+
+        let request = self.build_chat_request(app_db).await?;
+        let response = self.interact(ctx, request).await?;
+        session
+            .add_message(
+                MessageRole::Assistant.to_string(),
+                response.content.clone(),
+                response.reasoning_content.clone(),
+            )
+            .await?;
+
+        output_sender
+            .send(AgentOutput::SendMessage {
+                session_id: self.session_id,
+                content: response.content,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    async fn handle_middleware_event(
+        &self,
+        session: &SessionStore,
+        event: MiddlewareEvent,
+    ) -> anyhow::Result<bool> {
+        match event {
+            MiddlewareEvent::Activate { prompt } => {
+                session
+                    .add_message(
+                        MessageRole::Custom("internal".to_owned()).to_string(),
+                        prompt,
+                        None,
+                    )
+                    .await?;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn build_chat_request(&self, app_db: &Connection) -> anyhow::Result<ChatRequest> {
+        let messages = Message::list_by_session(app_db, self.session_id)
+            .await?
+            .into_iter()
+            .map(|message| ChatMessage {
+                role: chat_role(message.role),
+                content: ChatMessageContent {
+                    content: message.content,
+                    reasoning_content: message.reasoning_content,
+                    images: Vec::new(),
+                },
+            })
+            .collect();
+
+        Ok(ChatRequest {
+            messages,
+            system_prompt: String::new(),
+            tools: Vec::new(),
+        })
+    }
+
     async fn run_after_chat_hooks(
         &self,
         ctx: &Context,
-        response: &mut types::ChatResponse,
+        response: &mut ChatResponse,
         applied_middleware_count: usize,
     ) -> anyhow::Result<()> {
         for middleware in self.middlewares[..applied_middleware_count].iter().rev() {
@@ -118,6 +328,25 @@ impl Agent {
     }
 }
 
+#[derive(Clone)]
+pub struct AgentSessionHandle {
+    pub session_id: i64,
+    pub activation_sender: Sender<AgentActivation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentOutput {
+    SendMessage { session_id: i64, content: String },
+}
+
+fn chat_role(role: String) -> Role {
+    match role.as_str() {
+        "user" => Role::User,
+        "assistant" => Role::Assistant,
+        _ => Role::Custom(role),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -125,9 +354,14 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use crate::agent::{
-        middleware::{Middleware, MiddlewareEvent, MiddlewareFlow},
-        types::ChatResponse,
+    use turso::Builder;
+
+    use crate::{
+        agent::{
+            middleware::{AgentActivation, Middleware, MiddlewareEvent, MiddlewareFlow},
+            types::ChatResponse,
+        },
+        entity::{Entity, agent::Agent, message::Message, session::Session},
     };
 
     use super::*;
@@ -140,10 +374,10 @@ mod tests {
     impl Provider for StaticProvider {
         async fn chat(
             &self,
-            _request: types::ChatRequest,
+            _request: ChatRequest,
             _option: ModelOptions,
             _event_sender: Option<std::sync::mpsc::Sender<crate::provider::ChatEvent>>,
-        ) -> Result<types::ChatResponse, anyhow::Error> {
+        ) -> Result<ChatResponse, anyhow::Error> {
             self.called.store(true, Ordering::SeqCst);
             Ok(chat_response("provider"))
         }
@@ -156,7 +390,7 @@ mod tests {
         async fn before_chat(
             &self,
             _ctx: &Context,
-            _request: &mut types::ChatRequest,
+            _request: &mut ChatRequest,
         ) -> Result<MiddlewareFlow, anyhow::Error> {
             Ok(MiddlewareFlow::Respond(chat_response("middleware")))
         }
@@ -183,12 +417,22 @@ mod tests {
         }
     }
 
+    async fn connection() -> anyhow::Result<(Connection, Session)> {
+        let db = Builder::new_local(":memory:").build().await?;
+        let conn = db.connect()?;
+        Message::create_table(&conn).await?;
+        let agent = Agent::create(&conn, "Neko", "gpt-5.4").await?;
+        let session = Session::create(&conn, agent.id).await?;
+        Ok((conn, session))
+    }
+
     #[tokio::test]
-    async fn middleware_can_short_circuit_provider() {
+    async fn middleware_can_short_circuit_provider() -> anyhow::Result<()> {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
-        let agent = Agent {
-            id: "test-agent".to_owned(),
+        let agent = AgentSession {
+            agent_id: 1,
+            session_id: 1,
             middlewares: vec![Arc::new(ShortCircuitMiddleware)],
             provider: Arc::new(StaticProvider {
                 called: Arc::clone(&provider_called),
@@ -199,29 +443,30 @@ mod tests {
         let response = agent
             .interact(
                 Context {
-                    agent_id: "test-agent".to_owned(),
+                    agent_id: 1,
+                    session_id: 1,
                     event_sender,
                 },
-                types::ChatRequest {
+                ChatRequest {
                     messages: Vec::new(),
                     system_prompt: String::new(),
                     tools: Vec::new(),
                 },
-                None,
             )
-            .await
-            .expect("middleware response should succeed");
+            .await?;
 
         assert_eq!(response.content, "middleware-after");
         assert!(!provider_called.load(Ordering::SeqCst));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn middleware_can_activate_agent_from_init() {
+    async fn middleware_can_activate_agent_from_init() -> anyhow::Result<()> {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(16);
-        let agent = Agent {
-            id: "test-agent".to_owned(),
+        let agent = AgentSession {
+            agent_id: 1,
+            session_id: 1,
             middlewares: vec![Arc::new(ActivateOnInitMiddleware)],
             provider: Arc::new(StaticProvider {
                 called: Arc::clone(&provider_called),
@@ -231,21 +476,102 @@ mod tests {
 
         agent
             .init(&Context {
-                agent_id: "test-agent".to_owned(),
+                agent_id: 1,
+                session_id: 1,
                 event_sender,
             })
-            .await
-            .expect("middleware init should succeed");
+            .await?;
 
         assert_eq!(
             event_receiver.recv().await,
-            Some(MiddlewareEvent::Activate("wake up".to_owned()))
+            Some(MiddlewareEvent::Activate {
+                prompt: "wake up".to_owned(),
+            })
         );
         assert!(!provider_called.load(Ordering::SeqCst));
+        Ok(())
     }
 
-    fn chat_response(content: impl Into<String>) -> types::ChatResponse {
-        types::ChatResponse {
+    #[tokio::test]
+    async fn agent_session_records_activation_and_response() -> anyhow::Result<()> {
+        let (conn, session) = connection().await?;
+        let provider_called = Arc::new(AtomicBool::new(false));
+        let agent = AgentSession {
+            agent_id: session.agent_id,
+            session_id: session.id,
+            middlewares: Vec::new(),
+            provider: Arc::new(StaticProvider {
+                called: Arc::clone(&provider_called),
+            }),
+            model_options: ModelOptions::default(),
+        };
+        let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
+        let handle = agent.start(conn.clone(), output_sender).await?;
+
+        handle
+            .activation_sender
+            .send(AgentActivation::ChannelMessage {
+                chat_name: "Alice".to_owned(),
+                sender_name: "Alice".to_owned(),
+                content: "hello".to_owned(),
+            })
+            .await?;
+
+        assert_eq!(
+            output_receiver.recv().await,
+            Some(AgentOutput::SendMessage {
+                session_id: session.id,
+                content: "provider".to_owned(),
+            })
+        );
+
+        let messages = Message::list_by_session(&conn, session.id).await?;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].content, "provider");
+        assert!(provider_called.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn middleware_activation_records_internal_message_and_response() -> anyhow::Result<()> {
+        let (conn, session) = connection().await?;
+        let provider_called = Arc::new(AtomicBool::new(false));
+        let agent = AgentSession {
+            agent_id: session.agent_id,
+            session_id: session.id,
+            middlewares: vec![Arc::new(ActivateOnInitMiddleware)],
+            provider: Arc::new(StaticProvider {
+                called: Arc::clone(&provider_called),
+            }),
+            model_options: ModelOptions::default(),
+        };
+        let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
+        let _handle = agent.start(conn.clone(), output_sender).await?;
+
+        assert_eq!(
+            output_receiver.recv().await,
+            Some(AgentOutput::SendMessage {
+                session_id: session.id,
+                content: "provider".to_owned(),
+            })
+        );
+
+        let messages = Message::list_by_session(&conn, session.id).await?;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "internal");
+        assert_eq!(messages[0].content, "wake up");
+        assert_eq!(messages[1].role, "assistant");
+        assert!(provider_called.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    fn chat_response(content: impl Into<String>) -> ChatResponse {
+        ChatResponse {
             content: content.into(),
             reasoning_content: None,
             images: Vec::new(),

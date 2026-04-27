@@ -1332,6 +1332,11 @@ dependencies = [
 [[package]]
 name = "nekobot"
 version = "0.1.0"
+dependencies = [
+ "nekobot-core",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "nekobot-channel"
@@ -1339,6 +1344,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "tokio",
+ "turso",
 ]
 
 [[package]]

@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 async-trait.workspace = true
 anyhow.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+turso.workspace = true

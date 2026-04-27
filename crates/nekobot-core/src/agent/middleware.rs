@@ -4,15 +4,27 @@ use crate::agent::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MiddlewareEvent {
-    /// Ask the owning agent runtime to start one agent interaction with this prompt.
-    Activate(String),
+    Activate { prompt: String },
 }
 
 impl MiddlewareEvent {
     pub fn activate(prompt: impl Into<String>) -> Self {
-        Self::Activate(prompt.into())
+        Self::Activate {
+            prompt: prompt.into(),
+        }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentActivation {
+    ChannelMessage {
+        chat_name: String,
+        sender_name: String,
+        content: String,
+    },
+    Middleware(MiddlewareEvent),
 }
 
 pub enum MiddlewareFlow {
