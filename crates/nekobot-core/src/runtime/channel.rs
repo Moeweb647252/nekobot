@@ -185,9 +185,9 @@ mod tests {
     use turso::Builder;
 
     use crate::{
-        agent::types::{ChatRequest, ChatResponse},
+        agent::types::ChatResponse,
         entity::{Entity, agent::Agent},
-        provider::{ModelOptions, Provider},
+        provider::{ModelOptions, Provider, ProviderError, ProviderRequest},
     };
 
     use super::*;
@@ -259,14 +259,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Provider for EchoProvider {
-        async fn chat(
-            &self,
-            request: ChatRequest,
-            _option: ModelOptions,
-            _event_sender: Option<std::sync::mpsc::Sender<crate::provider::ChatEvent>>,
-        ) -> Result<ChatResponse, anyhow::Error> {
+        async fn complete(&self, request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let content = request
+                .chat
                 .messages
                 .last()
                 .map(|message| format!("echo: {}", message.content.content))

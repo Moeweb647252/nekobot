@@ -9,7 +9,7 @@ use crate::{
         types::{ChatMessage, ChatMessageContent, ChatRequest, ChatResponse, Role},
     },
     entity::message::{Message, Role as MessageRole},
-    provider::{ModelOptions, Provider},
+    provider::{ModelOptions, Provider, ProviderRequest},
     session::Session as SessionStore,
 };
 
@@ -144,13 +144,14 @@ impl AgentSession {
             }
         }
 
-        let mut response = match self
-            .provider
-            .chat(request, self.model_options.clone(), None)
-            .await
-        {
+        let provider_request = ProviderRequest {
+            chat: request,
+            options: self.model_options.clone(),
+        };
+        let mut response = match self.provider.complete(provider_request).await {
             Ok(response) => response,
             Err(error) => {
+                let error = anyhow::Error::from(error);
                 self.run_error_hooks(&ctx, &error, self.middlewares.len())
                     .await;
                 return Err(error);
@@ -298,7 +299,7 @@ impl AgentSession {
 
         Ok(ChatRequest {
             messages,
-            system_prompt: String::new(),
+            system_prompt: None,
             tools: Vec::new(),
         })
     }
@@ -350,7 +351,7 @@ fn chat_role(role: String) -> Role {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
@@ -362,6 +363,7 @@ mod tests {
             types::ChatResponse,
         },
         entity::{Entity, agent::Agent, message::Message, session::Session},
+        provider::{ModelCapabilities, ProviderError},
     };
 
     use super::*;
@@ -372,12 +374,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Provider for StaticProvider {
-        async fn chat(
-            &self,
-            _request: ChatRequest,
-            _option: ModelOptions,
-            _event_sender: Option<std::sync::mpsc::Sender<crate::provider::ChatEvent>>,
-        ) -> Result<ChatResponse, anyhow::Error> {
+        async fn complete(&self, _request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
             self.called.store(true, Ordering::SeqCst);
             Ok(chat_response("provider"))
         }
@@ -449,7 +446,7 @@ mod tests {
                 },
                 ChatRequest {
                     messages: Vec::new(),
-                    system_prompt: String::new(),
+                    system_prompt: None,
                     tools: Vec::new(),
                 },
             )
@@ -568,6 +565,110 @@ mod tests {
         assert!(provider_called.load(Ordering::SeqCst));
 
         Ok(())
+    }
+
+    struct CapturingProvider {
+        capabilities: Arc<Mutex<Option<ModelCapabilities>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CapturingProvider {
+        async fn complete(&self, request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
+            *self.capabilities.lock().unwrap() = Some(request.options.capabilities);
+            Ok(chat_response("provider"))
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_request_carries_model_capabilities() -> anyhow::Result<()> {
+        let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
+        let capabilities = ModelCapabilities {
+            streaming: true,
+            tools: true,
+            vision: false,
+            reasoning: true,
+        };
+        let observed_capabilities = Arc::new(Mutex::new(None));
+        let agent = AgentSession {
+            agent_id: 1,
+            session_id: 1,
+            middlewares: Vec::new(),
+            provider: Arc::new(CapturingProvider {
+                capabilities: Arc::clone(&observed_capabilities),
+            }),
+            model_options: ModelOptions {
+                capabilities: capabilities.clone(),
+                ..ModelOptions::default()
+            },
+        };
+
+        agent
+            .interact(
+                Context {
+                    agent_id: 1,
+                    session_id: 1,
+                    event_sender,
+                },
+                ChatRequest::default(),
+            )
+            .await?;
+
+        assert_eq!(*observed_capabilities.lock().unwrap(), Some(capabilities));
+        Ok(())
+    }
+
+    struct FailingProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for FailingProvider {
+        async fn complete(&self, _request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
+            Err(ProviderError::InvalidRequest("bad request".to_owned()))
+        }
+    }
+
+    struct ErrorObserverMiddleware {
+        called: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Middleware for ErrorObserverMiddleware {
+        async fn on_error(
+            &self,
+            _ctx: &Context,
+            _error: &anyhow::Error,
+        ) -> Result<(), anyhow::Error> {
+            self.called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_error_triggers_middleware_error_hook() {
+        let error_hook_called = Arc::new(AtomicBool::new(false));
+        let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
+        let agent = AgentSession {
+            agent_id: 1,
+            session_id: 1,
+            middlewares: vec![Arc::new(ErrorObserverMiddleware {
+                called: Arc::clone(&error_hook_called),
+            })],
+            provider: Arc::new(FailingProvider),
+            model_options: ModelOptions::default(),
+        };
+
+        let result = agent
+            .interact(
+                Context {
+                    agent_id: 1,
+                    session_id: 1,
+                    event_sender,
+                },
+                ChatRequest::default(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(error_hook_called.load(Ordering::SeqCst));
     }
 
     fn chat_response(content: impl Into<String>) -> ChatResponse {

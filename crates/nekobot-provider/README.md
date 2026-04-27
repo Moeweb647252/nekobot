@@ -1,5 +1,7 @@
 # Nekobot provider crate
 
-This crate provides a framework for implementing providers in the Nekobot ecosystem. A provider is a abstraction layer to external llm providers. It defines the necessary traits and structures for integrating different llm providers into the Nekobot system, allowing for flexibility and extensibility in how agents can access and utilize language models.
+This crate is the home for concrete provider adapters in the Nekobot ecosystem.
+The shared provider protocol currently lives in `nekobot-core::provider` and is
+re-exported from this crate for adapter implementations.
 
 ## Supported Providers

@@ -24,7 +24,9 @@ impl<S> NekoBot<S> {
         }
     }
 
-    async fn init(&mut self) -> Result<(), anyhow::Error> {}
+    async fn init(&mut self) -> Result<(), anyhow::Error> {
+        todo!("initialize db connections, agents, and runtimes")
+    }
 
     pub async fn run(&mut self) -> Result<(), anyhow::Error> {
         todo!("assemble db connections, agents into runtimes, and run the hole system")
