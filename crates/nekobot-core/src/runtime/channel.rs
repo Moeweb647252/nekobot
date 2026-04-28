@@ -94,7 +94,7 @@ impl ChannelRuntime {
             }
             None => {
                 let session =
-                    Session::create(&self.context.app_db, self.agent_config.agent_id).await?;
+                    Session::create(&self.context.app_db, &self.agent_config.agent_name).await?;
                 Contact::create(
                     &self.context.app_db,
                     session.id,
@@ -186,7 +186,7 @@ mod tests {
 
     use crate::{
         agent::types::ChatResponse,
-        entity::{Entity, agent::Agent},
+        entity::session::Session,
         provider::{ModelOptions, Provider, ProviderError, ProviderRequest},
     };
 
@@ -248,7 +248,7 @@ mod tests {
             Ok(())
         }
 
-        async fn get_contact_list(&self, _agent_id: i64) -> anyhow::Result<Vec<String>> {
+        async fn get_contact_list(&self, _agent_name: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())
         }
     }
@@ -282,8 +282,6 @@ mod tests {
     ) -> anyhow::Result<(ChannelRuntime, Connection, Arc<AtomicUsize>)> {
         let db = Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
-        Agent::create_table(&conn).await?;
-        let agent = Agent::create(&conn, "Neko", "gpt-5.4").await?;
         let calls = Arc::new(AtomicUsize::new(0));
         let runtime = ChannelRuntime::new(
             Box::new(channel),
@@ -291,7 +289,7 @@ mod tests {
                 app_db: conn.clone(),
             },
             AgentSessionConfig::new(
-                agent.id,
+                "Neko",
                 Arc::new(EchoProvider {
                     calls: Arc::clone(&calls),
                 }),
@@ -328,9 +326,13 @@ mod tests {
         let contact = Contact::get_by_name(&conn, "Alice")
             .await?
             .expect("contact should exist");
+        let session = Session::get(&conn, contact.session_id)
+            .await?
+            .expect("session should exist");
         let messages = Message::list_by_session(&conn, contact.session_id).await?;
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(session.agent_name, "Neko");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].content, "hello");

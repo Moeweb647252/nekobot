@@ -194,7 +194,6 @@ mod tests {
     use turso::Builder;
 
     use super::*;
-    use crate::entity::agent::Agent;
 
     async fn connection() -> anyhow::Result<Connection> {
         let db = Builder::new_local(":memory:").build().await?;
@@ -204,8 +203,7 @@ mod tests {
     }
 
     async fn session(conn: &Connection) -> anyhow::Result<Session> {
-        let agent = Agent::create(conn, "Neko", "gpt-5.4").await?;
-        Session::create(conn, agent.id).await
+        Session::create(conn, "Neko").await
     }
 
     #[tokio::test]

@@ -19,14 +19,14 @@ pub mod types;
 
 #[derive(Clone)]
 pub struct Context {
-    pub agent_id: i64,
+    pub agent_name: String,
     pub session_id: i64,
     pub event_sender: Sender<MiddlewareEvent>,
 }
 
 impl Context {
-    pub fn agent_id(&self) -> i64 {
-        self.agent_id
+    pub fn agent_name(&self) -> &str {
+        &self.agent_name
     }
 
     pub fn session_id(&self) -> i64 {
@@ -36,7 +36,7 @@ impl Context {
 
 #[derive(Clone)]
 pub struct AgentSessionConfig {
-    pub agent_id: i64,
+    pub agent_name: String,
     pub middlewares: Vec<Arc<dyn Middleware>>,
     pub provider: Arc<dyn Provider>,
     pub model_options: ModelOptions,
@@ -44,13 +44,13 @@ pub struct AgentSessionConfig {
 
 impl AgentSessionConfig {
     pub fn new(
-        agent_id: i64,
+        agent_name: impl Into<String>,
         provider: Arc<dyn Provider>,
         model_options: ModelOptions,
         middlewares: Vec<Arc<dyn Middleware>>,
     ) -> Self {
         Self {
-            agent_id,
+            agent_name: agent_name.into(),
             middlewares,
             provider,
             model_options,
@@ -60,7 +60,7 @@ impl AgentSessionConfig {
 
 pub struct AgentSession {
     pub session_id: i64,
-    pub agent_id: i64,
+    pub agent_name: String,
     pub(crate) middlewares: Vec<Arc<dyn Middleware>>,
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model_options: ModelOptions,
@@ -70,7 +70,7 @@ impl AgentSession {
     pub fn new(session_id: i64, config: AgentSessionConfig) -> Self {
         Self {
             session_id,
-            agent_id: config.agent_id,
+            agent_name: config.agent_name,
             middlewares: config.middlewares,
             provider: config.provider,
             model_options: config.model_options,
@@ -85,7 +85,7 @@ impl AgentSession {
         let (activation_sender, activation_receiver) = tokio::sync::mpsc::channel(32);
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(32);
         let ctx = Context {
-            agent_id: self.agent_id,
+            agent_name: self.agent_name.clone(),
             session_id: self.session_id,
             event_sender,
         };
@@ -362,7 +362,7 @@ mod tests {
             middleware::{AgentActivation, Middleware, MiddlewareEvent, MiddlewareFlow},
             types::ChatResponse,
         },
-        entity::{Entity, agent::Agent, message::Message, session::Session},
+        entity::{Entity, message::Message, session::Session},
         provider::{ModelCapabilities, ProviderError},
     };
 
@@ -418,8 +418,7 @@ mod tests {
         let db = Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
         Message::create_table(&conn).await?;
-        let agent = Agent::create(&conn, "Neko", "gpt-5.4").await?;
-        let session = Session::create(&conn, agent.id).await?;
+        let session = Session::create(&conn, "Neko").await?;
         Ok((conn, session))
     }
 
@@ -428,7 +427,7 @@ mod tests {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
         let agent = AgentSession {
-            agent_id: 1,
+            agent_name: "Neko".to_owned(),
             session_id: 1,
             middlewares: vec![Arc::new(ShortCircuitMiddleware)],
             provider: Arc::new(StaticProvider {
@@ -440,7 +439,7 @@ mod tests {
         let response = agent
             .interact(
                 Context {
-                    agent_id: 1,
+                    agent_name: "Neko".to_owned(),
                     session_id: 1,
                     event_sender,
                 },
@@ -462,7 +461,7 @@ mod tests {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(16);
         let agent = AgentSession {
-            agent_id: 1,
+            agent_name: "Neko".to_owned(),
             session_id: 1,
             middlewares: vec![Arc::new(ActivateOnInitMiddleware)],
             provider: Arc::new(StaticProvider {
@@ -473,7 +472,7 @@ mod tests {
 
         agent
             .init(&Context {
-                agent_id: 1,
+                agent_name: "Neko".to_owned(),
                 session_id: 1,
                 event_sender,
             })
@@ -494,7 +493,7 @@ mod tests {
         let (conn, session) = connection().await?;
         let provider_called = Arc::new(AtomicBool::new(false));
         let agent = AgentSession {
-            agent_id: session.agent_id,
+            agent_name: session.agent_name.clone(),
             session_id: session.id,
             middlewares: Vec::new(),
             provider: Arc::new(StaticProvider {
@@ -538,7 +537,7 @@ mod tests {
         let (conn, session) = connection().await?;
         let provider_called = Arc::new(AtomicBool::new(false));
         let agent = AgentSession {
-            agent_id: session.agent_id,
+            agent_name: session.agent_name.clone(),
             session_id: session.id,
             middlewares: vec![Arc::new(ActivateOnInitMiddleware)],
             provider: Arc::new(StaticProvider {
@@ -590,7 +589,7 @@ mod tests {
         };
         let observed_capabilities = Arc::new(Mutex::new(None));
         let agent = AgentSession {
-            agent_id: 1,
+            agent_name: "Neko".to_owned(),
             session_id: 1,
             middlewares: Vec::new(),
             provider: Arc::new(CapturingProvider {
@@ -605,7 +604,7 @@ mod tests {
         agent
             .interact(
                 Context {
-                    agent_id: 1,
+                    agent_name: "Neko".to_owned(),
                     session_id: 1,
                     event_sender,
                 },
@@ -647,7 +646,7 @@ mod tests {
         let error_hook_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
         let agent = AgentSession {
-            agent_id: 1,
+            agent_name: "Neko".to_owned(),
             session_id: 1,
             middlewares: vec![Arc::new(ErrorObserverMiddleware {
                 called: Arc::clone(&error_hook_called),
@@ -659,7 +658,7 @@ mod tests {
         let result = agent
             .interact(
                 Context {
-                    agent_id: 1,
+                    agent_name: "Neko".to_owned(),
                     session_id: 1,
                     event_sender,
                 },

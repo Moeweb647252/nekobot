@@ -43,5 +43,5 @@ pub trait Channel: Send + Sync {
 
     async fn send(&self, request: Request) -> anyhow::Result<()>;
 
-    async fn get_contact_list(&self, agent_id: i64) -> anyhow::Result<Vec<String>>;
+    async fn get_contact_list(&self, agent_name: &str) -> anyhow::Result<Vec<String>>;
 }

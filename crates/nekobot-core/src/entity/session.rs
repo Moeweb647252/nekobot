@@ -1,28 +1,33 @@
 use turso::Connection;
 
-use crate::entity::{Entity, agent::Agent, enable_foreign_keys};
+use crate::entity::{Entity, enable_foreign_keys};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: i64,
-    pub agent_id: i64,
+    pub agent_name: String,
 }
 
 impl Session {
-    pub async fn create(conn: &Connection, agent_id: i64) -> anyhow::Result<Self> {
+    pub async fn create(conn: &Connection, agent_name: impl Into<String>) -> anyhow::Result<Self> {
         enable_foreign_keys(conn).await?;
-        conn.execute("INSERT INTO sessions (agent_id) VALUES (?1)", (agent_id,))
-            .await?;
+
+        let agent_name = agent_name.into();
+        conn.execute(
+            "INSERT INTO sessions (agent_name) VALUES (?1)",
+            (agent_name.as_str(),),
+        )
+        .await?;
 
         Ok(Self {
             id: conn.last_insert_rowid(),
-            agent_id,
+            agent_name,
         })
     }
 
     pub async fn get(conn: &Connection, id: i64) -> anyhow::Result<Option<Self>> {
         let mut rows = conn
-            .query("SELECT id, agent_id FROM sessions WHERE id = ?1", (id,))
+            .query("SELECT id, agent_name FROM sessions WHERE id = ?1", (id,))
             .await?;
 
         rows.next()
@@ -33,27 +38,36 @@ impl Session {
 
     pub async fn list(conn: &Connection) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
-            .query("SELECT id, agent_id FROM sessions ORDER BY id", ())
+            .query("SELECT id, agent_name FROM sessions ORDER BY id", ())
             .await?;
         Self::collect_rows(&mut rows).await
     }
 
-    pub async fn list_by_agent(conn: &Connection, agent_id: i64) -> anyhow::Result<Vec<Self>> {
+    pub async fn list_by_agent(
+        conn: &Connection,
+        agent_name: impl AsRef<str>,
+    ) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
             .query(
-                "SELECT id, agent_id FROM sessions WHERE agent_id = ?1 ORDER BY id",
-                (agent_id,),
+                "SELECT id, agent_name FROM sessions WHERE agent_name = ?1 ORDER BY id",
+                (agent_name.as_ref(),),
             )
             .await?;
         Self::collect_rows(&mut rows).await
     }
 
-    pub async fn update(conn: &Connection, id: i64, agent_id: i64) -> anyhow::Result<Option<Self>> {
+    pub async fn update(
+        conn: &Connection,
+        id: i64,
+        agent_name: impl Into<String>,
+    ) -> anyhow::Result<Option<Self>> {
         enable_foreign_keys(conn).await?;
+
+        let agent_name = agent_name.into();
         let changed = conn
             .execute(
-                "UPDATE sessions SET agent_id = ?1 WHERE id = ?2",
-                (agent_id, id),
+                "UPDATE sessions SET agent_name = ?1 WHERE id = ?2",
+                (agent_name.as_str(), id),
             )
             .await?;
 
@@ -86,20 +100,18 @@ impl Session {
     fn from_row(row: &turso::Row) -> anyhow::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
-            agent_id: row.get(1)?,
+            agent_name: row.get(1)?,
         })
     }
 }
 
 impl Entity for Session {
     async fn create_table(conn: &Connection) -> anyhow::Result<()> {
-        Agent::create_table(conn).await?;
         enable_foreign_keys(conn).await?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    agent_id INTEGER NOT NULL,
-                    FOREIGN KEY(agent_id) REFERENCES agents(id)
+                    agent_name TEXT NOT NULL
                 )",
             (),
         )
@@ -124,12 +136,10 @@ mod tests {
     #[tokio::test]
     async fn session_crud() -> anyhow::Result<()> {
         let conn = connection().await?;
-        let first_agent = Agent::create(&conn, "Neko", "gpt-5.4").await?;
-        let second_agent = Agent::create(&conn, "Mimi", "gpt-5.4-mini").await?;
 
-        let first = Session::create(&conn, first_agent.id).await?;
-        let second = Session::create(&conn, first_agent.id).await?;
-        let third = Session::create(&conn, second_agent.id).await?;
+        let first = Session::create(&conn, "Neko").await?;
+        let second = Session::create(&conn, "Neko").await?;
+        let third = Session::create(&conn, "Mimi").await?;
 
         assert_eq!(first.id, 1);
         assert_eq!(Session::get(&conn, first.id).await?, Some(first.clone()));
@@ -138,21 +148,21 @@ mod tests {
             vec![first.clone(), second.clone(), third.clone()]
         );
         assert_eq!(
-            Session::list_by_agent(&conn, first_agent.id).await?,
+            Session::list_by_agent(&conn, "Neko").await?,
             vec![first.clone(), second.clone()]
         );
 
-        let updated = Session::update(&conn, first.id, second_agent.id)
+        let updated = Session::update(&conn, first.id, "Mimi")
             .await?
             .expect("session should exist");
         assert_eq!(
             updated,
             Session {
                 id: first.id,
-                agent_id: second_agent.id,
+                agent_name: "Mimi".to_owned(),
             }
         );
-        assert_eq!(Session::update(&conn, 999, first_agent.id).await?, None);
+        assert_eq!(Session::update(&conn, 999, "Neko").await?, None);
 
         assert!(Session::delete(&conn, second.id).await?);
         assert!(!Session::delete(&conn, 999).await?);
@@ -162,18 +172,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_foreign_key_is_enforced() -> anyhow::Result<()> {
+    async fn session_allows_any_agent_name() -> anyhow::Result<()> {
         let conn = connection().await?;
-        let agent = Agent::create(&conn, "Neko", "gpt-5.4").await?;
 
-        assert!(Session::create(&conn, 999).await.is_err());
+        let session = Session::create(&conn, "configured-agent").await?;
 
-        let session = Session::create(&conn, agent.id).await?;
-        assert!(Agent::delete(&conn, agent.id).await.is_err());
-
-        assert!(Session::delete(&conn, session.id).await?);
-        assert!(Agent::delete(&conn, agent.id).await?);
-
+        assert_eq!(session.agent_name, "configured-agent");
+        assert_eq!(Session::get(&conn, session.id).await?, Some(session));
         Ok(())
     }
 }
