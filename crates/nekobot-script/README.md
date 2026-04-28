@@ -1,4 +1,4 @@
-# Nekobot Tool Middleware
+# Nekobot Script Middleware
 
 ## Description
 

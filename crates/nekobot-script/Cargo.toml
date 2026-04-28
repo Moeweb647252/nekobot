@@ -1,5 +1,5 @@
 [package]
-name = "nekobot-tool"
+name = "nekobot-script"
 version = "0.1.0"
 edition = "2024"
 

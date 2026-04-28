@@ -1582,15 +1582,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "nekobot-skill"
-version = "0.1.0"
-
-[[package]]
-name = "nekobot-tool"
+name = "nekobot-script"
 version = "0.1.0"
 dependencies = [
  "boa_engine",
 ]
+
+[[package]]
+name = "nekobot-skill"
+version = "0.1.0"
 
 [[package]]
 name = "nom"
