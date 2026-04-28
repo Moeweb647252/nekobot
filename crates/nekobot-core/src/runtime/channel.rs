@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nekobot_channel::{Channel, ChatInfo, Event, Request, entity::contact::Contact};
+use nekobot_channel::{Channel, ChannelInfo, ChatInfo, Event, ReplyTarget, Request};
 use tokio::sync::mpsc::Sender;
 use turso::Connection;
 
@@ -10,15 +10,26 @@ use crate::{
         AgentOutput, AgentSession, AgentSessionConfig, AgentSessionHandle,
         middleware::AgentActivation,
     },
-    entity::{Entity, message::Message, session::Session},
+    entity::{
+        Entity,
+        channel_chat_agent::{AgentName, ChannelChatAgent, NewChannelChatAgent, SessionId},
+        message::Message,
+        session::Session,
+    },
 };
+
+type ChannelAgentKey = (
+    nekobot_channel::ChannelId,
+    nekobot_channel::ChatId,
+    AgentName,
+);
 
 pub struct ChannelRuntime {
     channel: Box<dyn Channel>,
     context: ChannelContext,
     agent_config: AgentSessionConfig,
-    sessions: HashMap<String, AgentSessionHandle>,
-    session_targets: HashMap<i64, String>,
+    sessions: HashMap<ChannelAgentKey, AgentSessionHandle>,
+    session_targets: HashMap<SessionId, ReplyTarget>,
 }
 
 pub struct ChannelContext {
@@ -42,12 +53,13 @@ impl ChannelRuntime {
 
     async fn prepare_tables(&self) -> anyhow::Result<()> {
         Message::create_table(&self.context.app_db).await?;
-        Contact::create_table(&self.context.app_db).await?;
+        ChannelChatAgent::create_table(&self.context.app_db).await?;
         Ok(())
     }
 
     async fn handle_channel_event(
         &mut self,
+        channel_info: &ChannelInfo,
         event: Event,
         output_sender: Sender<AgentOutput>,
     ) -> anyhow::Result<()> {
@@ -57,13 +69,15 @@ impl ChannelRuntime {
                 sender,
                 content,
             } => {
-                let handle = self.ensure_agent_session(&chat, output_sender).await?;
+                let handle = self
+                    .ensure_agent_session(channel_info, &chat, output_sender)
+                    .await?;
 
                 handle
                     .activation_sender
                     .send(AgentActivation::ChannelMessage {
-                        chat_name: chat.name,
-                        sender_name: sender.name,
+                        chat_name: chat.name.into_string(),
+                        sender_name: sender.name.into_string(),
                         content,
                     })
                     .await?;
@@ -75,48 +89,74 @@ impl ChannelRuntime {
 
     async fn ensure_agent_session(
         &mut self,
+        channel_info: &ChannelInfo,
         chat: &ChatInfo,
         output_sender: Sender<AgentOutput>,
     ) -> anyhow::Result<AgentSessionHandle> {
-        let contact = match Contact::get_by_name(&self.context.app_db, &chat.name).await? {
-            Some(contact) => {
-                if contact.target != chat.reply_target {
-                    Contact::update_target(
+        let agent_name = AgentName::from(self.agent_config.agent_name.clone());
+        let mapping = match ChannelChatAgent::get_by_channel_chat_agent(
+            &self.context.app_db,
+            &channel_info.id,
+            &chat.id,
+            &agent_name,
+        )
+        .await?
+        {
+            Some(mapping) => {
+                if mapping.channel_name != channel_info.name
+                    || mapping.chat_name != chat.name
+                    || mapping.reply_target != chat.reply_target
+                {
+                    ChannelChatAgent::update_chat_cache(
                         &self.context.app_db,
-                        contact.id,
+                        mapping.id,
+                        channel_info.name.clone(),
+                        chat.name.clone(),
                         chat.reply_target.clone(),
                     )
                     .await?
-                    .unwrap_or(contact)
+                    .unwrap_or(mapping)
                 } else {
-                    contact
+                    mapping
                 }
             }
             None => {
-                let session =
-                    Session::create(&self.context.app_db, &self.agent_config.agent_name).await?;
-                Contact::create(
+                let session = Session::create(&self.context.app_db, agent_name.as_str()).await?;
+                ChannelChatAgent::create(
                     &self.context.app_db,
-                    session.id,
-                    chat.name.clone(),
-                    chat.reply_target.clone(),
+                    NewChannelChatAgent {
+                        channel_id: channel_info.id.clone(),
+                        channel_name: channel_info.name.clone(),
+                        chat_id: chat.id.clone(),
+                        chat_name: chat.name.clone(),
+                        reply_target: chat.reply_target.clone(),
+                        agent_name: agent_name.clone(),
+                        session_id: SessionId::from(session.id),
+                    },
                 )
                 .await?
             }
         };
 
         self.session_targets
-            .insert(contact.session_id, contact.target.clone());
+            .insert(mapping.session_id, mapping.reply_target.clone());
 
-        if let Some(handle) = self.sessions.get(&chat.name) {
+        let key = (
+            mapping.channel_id.clone(),
+            mapping.chat_id.clone(),
+            mapping.agent_name.clone(),
+        );
+
+        if let Some(handle) = self.sessions.get(&key) {
             return Ok(handle.clone());
         }
 
-        let agent_session = AgentSession::new(contact.session_id, self.agent_config.clone());
+        let agent_session =
+            AgentSession::new(mapping.session_id.as_i64(), self.agent_config.clone());
         let handle = agent_session
             .start(self.context.app_db.clone(), output_sender)
             .await?;
-        self.sessions.insert(chat.name.clone(), handle.clone());
+        self.sessions.insert(key, handle.clone());
 
         Ok(handle)
     }
@@ -127,9 +167,12 @@ impl ChannelRuntime {
                 session_id,
                 content,
             } => {
-                let target = self.session_targets.get(&session_id).ok_or_else(|| {
-                    anyhow::anyhow!("missing channel target for session {session_id}")
-                })?;
+                let target = self
+                    .session_targets
+                    .get(&SessionId::from(session_id))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("missing channel target for session {session_id}")
+                    })?;
 
                 self.channel
                     .send(Request::SendMessage {
@@ -150,7 +193,7 @@ impl Runtime for ChannelRuntime {
 
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(64);
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(64);
-        let _channel_info = self.channel.register(event_sender).await?;
+        let channel_info = self.channel.register(event_sender).await?;
 
         loop {
             tokio::select! {
@@ -158,7 +201,7 @@ impl Runtime for ChannelRuntime {
                     let Some(event) = event else {
                         break;
                     };
-                    self.handle_channel_event(event, output_sender.clone()).await?;
+                    self.handle_channel_event(&channel_info, event, output_sender.clone()).await?;
                 }
                 output = output_receiver.recv() => {
                     let Some(output) = output else {
@@ -180,13 +223,20 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use nekobot_channel::{ChannelInfo, SenderInfo};
+    use nekobot_channel::{
+        ChannelId, ChannelInfo, ChannelName, ChatId, ChatInfo, ChatName, ReplyTarget, SenderId,
+        SenderInfo, SenderName,
+    };
     use tokio::sync::{Mutex, Notify};
     use turso::Builder;
 
     use crate::{
         agent::types::ChatResponse,
-        entity::session::Session,
+        entity::{
+            channel_chat_agent::{AgentName, ChannelChatAgent},
+            message::Message,
+            session::Session,
+        },
         provider::{ModelOptions, Provider, ProviderError, ProviderRequest},
     };
 
@@ -239,17 +289,14 @@ mod tests {
             *self.state.event_sender.lock().await = Some(sender);
             self.state.registered.notify_waiters();
             Ok(ChannelInfo {
-                name: "test".to_owned(),
+                id: ChannelId::from("test-channel"),
+                name: ChannelName::from("Test Channel"),
             })
         }
 
         async fn send(&self, request: Request) -> anyhow::Result<()> {
             self.state.sent_requests.lock().await.push(request);
             Ok(())
-        }
-
-        async fn get_contact_list(&self, _agent_name: &str) -> anyhow::Result<Vec<String>> {
-            Ok(Vec::new())
         }
     }
 
@@ -282,6 +329,15 @@ mod tests {
     ) -> anyhow::Result<(ChannelRuntime, Connection, Arc<AtomicUsize>)> {
         let db = Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
+        let (runtime, calls) = runtime_with_connection(channel, conn.clone(), "Neko");
+        Ok((runtime, conn, calls))
+    }
+
+    fn runtime_with_connection(
+        channel: TestChannel,
+        conn: Connection,
+        agent_name: &str,
+    ) -> (ChannelRuntime, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let runtime = ChannelRuntime::new(
             Box::new(channel),
@@ -289,7 +345,7 @@ mod tests {
                 app_db: conn.clone(),
             },
             AgentSessionConfig::new(
-                "Neko",
+                agent_name,
                 Arc::new(EchoProvider {
                     calls: Arc::clone(&calls),
                 }),
@@ -298,7 +354,29 @@ mod tests {
             ),
         );
 
-        Ok((runtime, conn, calls))
+        (runtime, calls)
+    }
+
+    fn channel_info() -> ChannelInfo {
+        ChannelInfo {
+            id: ChannelId::from("test-channel"),
+            name: ChannelName::from("Test Channel"),
+        }
+    }
+
+    fn chat(id: &str, name: &str, reply_target: &str) -> ChatInfo {
+        ChatInfo {
+            id: ChatId::from(id),
+            name: ChatName::from(name),
+            reply_target: ReplyTarget::from(reply_target),
+        }
+    }
+
+    fn sender(id: &str, name: &str) -> SenderInfo {
+        SenderInfo {
+            id: SenderId::from(id),
+            name: SenderName::from(name),
+        }
     }
 
     #[tokio::test]
@@ -310,29 +388,32 @@ mod tests {
 
         channel
             .emit(Event::IncomingMessage {
-                chat: ChatInfo {
-                    name: "Alice".to_owned(),
-                    reply_target: "alice-target".to_owned(),
-                },
-                sender: SenderInfo {
-                    name: "Alice".to_owned(),
-                },
+                chat: chat("chat-alice", "Alice", "alice-target"),
+                sender: sender("sender-alice", "Alice"),
                 content: "hello".to_owned(),
             })
             .await?;
 
         wait_for_sent_requests(&channel, 1).await;
 
-        let contact = Contact::get_by_name(&conn, "Alice")
-            .await?
-            .expect("contact should exist");
-        let session = Session::get(&conn, contact.session_id)
+        let mapping = ChannelChatAgent::get_by_channel_chat_agent(
+            &conn,
+            &ChannelId::from("test-channel"),
+            &ChatId::from("chat-alice"),
+            &AgentName::from("Neko"),
+        )
+        .await?
+        .expect("channel chat agent mapping should exist");
+        let session = Session::get(&conn, mapping.session_id.as_i64())
             .await?
             .expect("session should exist");
-        let messages = Message::list_by_session(&conn, contact.session_id).await?;
+        let messages = Message::list_by_session(&conn, mapping.session_id.as_i64()).await?;
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(session.agent_name, "Neko");
+        assert_eq!(mapping.channel_id, ChannelId::from("test-channel"));
+        assert_eq!(mapping.chat_id, ChatId::from("chat-alice"));
+        assert_eq!(mapping.reply_target, ReplyTarget::from("alice-target"));
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].content, "hello");
@@ -341,7 +422,7 @@ mod tests {
         assert_eq!(
             channel.sent_requests().await,
             vec![Request::SendMessage {
-                target: "alice-target".to_owned(),
+                target: ReplyTarget::from("alice-target"),
                 content: "echo: hello".to_owned(),
             }]
         );
@@ -351,22 +432,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_chat_reuses_session_and_different_chat_creates_new_session() -> anyhow::Result<()>
-    {
+    async fn same_chat_id_reuses_session_and_different_chat_id_creates_new_session()
+    -> anyhow::Result<()> {
         let channel = TestChannel::new();
         let (mut runtime, conn, _calls) = runtime(channel.clone()).await?;
         let runtime_task = tokio::spawn(async move { runtime.run().await });
 
-        for (chat_name, content) in [("Alice", "first"), ("Alice", "second"), ("Bob", "third")] {
+        for (chat_id, chat_name, content) in [
+            ("chat-1", "Alice", "first"),
+            ("chat-1", "Alice Updated", "second"),
+            ("chat-2", "Alice", "third"),
+        ] {
             channel
                 .emit(Event::IncomingMessage {
-                    chat: ChatInfo {
-                        name: chat_name.to_owned(),
-                        reply_target: format!("{chat_name}-target"),
-                    },
-                    sender: SenderInfo {
-                        name: chat_name.to_owned(),
-                    },
+                    chat: chat(chat_id, chat_name, &format!("{chat_id}-target")),
+                    sender: sender("sender-alice", chat_name),
                     content: content.to_owned(),
                 })
                 .await?;
@@ -374,26 +454,151 @@ mod tests {
 
         wait_for_sent_requests(&channel, 3).await;
 
-        let alice = Contact::get_by_name(&conn, "Alice")
-            .await?
-            .expect("Alice contact should exist");
-        let bob = Contact::get_by_name(&conn, "Bob")
-            .await?
-            .expect("Bob contact should exist");
+        let first_chat = ChannelChatAgent::get_by_channel_chat_agent(
+            &conn,
+            &ChannelId::from("test-channel"),
+            &ChatId::from("chat-1"),
+            &AgentName::from("Neko"),
+        )
+        .await?
+        .expect("first chat mapping should exist");
+        let second_chat = ChannelChatAgent::get_by_channel_chat_agent(
+            &conn,
+            &ChannelId::from("test-channel"),
+            &ChatId::from("chat-2"),
+            &AgentName::from("Neko"),
+        )
+        .await?
+        .expect("second chat mapping should exist");
 
-        assert_ne!(alice.session_id, bob.session_id);
+        assert_ne!(first_chat.session_id, second_chat.session_id);
+        assert_eq!(first_chat.chat_name, ChatName::from("Alice Updated"));
         assert_eq!(
-            Message::list_by_session(&conn, alice.session_id)
+            Message::list_by_session(&conn, first_chat.session_id.as_i64())
                 .await?
                 .len(),
             4
         );
         assert_eq!(
-            Message::list_by_session(&conn, bob.session_id).await?.len(),
+            Message::list_by_session(&conn, second_chat.session_id.as_i64())
+                .await?
+                .len(),
             2
         );
 
         runtime_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn same_chat_can_bind_to_different_agents() -> anyhow::Result<()> {
+        let db = Builder::new_local(":memory:").build().await?;
+        let conn = db.connect()?;
+        let channel = TestChannel::new();
+        let (mut neko_runtime, _neko_calls) =
+            runtime_with_connection(channel.clone(), conn.clone(), "Neko");
+        let (mut mimi_runtime, _mimi_calls) =
+            runtime_with_connection(channel, conn.clone(), "Mimi");
+        let (output_sender, _output_receiver) = tokio::sync::mpsc::channel(16);
+        let chat = chat("chat-1", "Alice", "alice-target");
+        let channel_info = channel_info();
+
+        neko_runtime.prepare_tables().await?;
+        neko_runtime
+            .ensure_agent_session(&channel_info, &chat, output_sender.clone())
+            .await?;
+        mimi_runtime
+            .ensure_agent_session(&channel_info, &chat, output_sender)
+            .await?;
+
+        let neko_mapping = ChannelChatAgent::get_by_channel_chat_agent(
+            &conn,
+            &ChannelId::from("test-channel"),
+            &ChatId::from("chat-1"),
+            &AgentName::from("Neko"),
+        )
+        .await?
+        .expect("Neko mapping should exist");
+        let mimi_mapping = ChannelChatAgent::get_by_channel_chat_agent(
+            &conn,
+            &ChannelId::from("test-channel"),
+            &ChatId::from("chat-1"),
+            &AgentName::from("Mimi"),
+        )
+        .await?
+        .expect("Mimi mapping should exist");
+
+        assert_ne!(neko_mapping.session_id, mimi_mapping.session_id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reply_target_change_updates_routing_cache() -> anyhow::Result<()> {
+        let channel = TestChannel::new();
+        let (mut runtime, conn, _calls) = runtime(channel.clone()).await?;
+        let runtime_task = tokio::spawn(async move { runtime.run().await });
+
+        channel
+            .emit(Event::IncomingMessage {
+                chat: chat("chat-1", "Alice", "target-1"),
+                sender: sender("sender-alice", "Alice"),
+                content: "first".to_owned(),
+            })
+            .await?;
+        wait_for_sent_requests(&channel, 1).await;
+
+        channel
+            .emit(Event::IncomingMessage {
+                chat: chat("chat-1", "Alice", "target-2"),
+                sender: sender("sender-alice", "Alice"),
+                content: "second".to_owned(),
+            })
+            .await?;
+        wait_for_sent_requests(&channel, 2).await;
+
+        let mapping = ChannelChatAgent::get_by_channel_chat_agent(
+            &conn,
+            &ChannelId::from("test-channel"),
+            &ChatId::from("chat-1"),
+            &AgentName::from("Neko"),
+        )
+        .await?
+        .expect("mapping should exist");
+
+        assert_eq!(mapping.reply_target, ReplyTarget::from("target-2"));
+        assert_eq!(
+            channel.sent_requests().await,
+            vec![
+                Request::SendMessage {
+                    target: ReplyTarget::from("target-1"),
+                    content: "echo: first".to_owned(),
+                },
+                Request::SendMessage {
+                    target: ReplyTarget::from("target-2"),
+                    content: "echo: second".to_owned(),
+                },
+            ]
+        );
+
+        runtime_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_output_without_mapping_returns_error() -> anyhow::Result<()> {
+        let channel = TestChannel::new();
+        let (runtime, _conn, _calls) = runtime(channel).await?;
+
+        let error = runtime
+            .handle_agent_output(AgentOutput::SendMessage {
+                session_id: 999,
+                content: "hello".to_owned(),
+            })
+            .await
+            .expect_err("missing mapping should fail");
+
+        assert_eq!(error.to_string(), "missing channel target for session 999");
         Ok(())
     }
 

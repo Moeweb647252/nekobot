@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use tokio::sync::mpsc::{Receiver, Sender};
 use turso::Connection;
@@ -6,6 +6,7 @@ use turso::Connection;
 use crate::{
     agent::{
         middleware::{AgentActivation, Middleware, MiddlewareEvent, MiddlewareFlow},
+        tool::ToolRegistry,
         types::{ChatMessage, ChatMessageContent, ChatRequest, ChatResponse, Role},
     },
     entity::message::{Message, Role as MessageRole},
@@ -22,15 +23,34 @@ pub struct Context {
     pub agent_name: String,
     pub session_id: i64,
     pub event_sender: Sender<MiddlewareEvent>,
+    pub tool_registry: Arc<ToolRegistry>,
 }
 
 impl Context {
+    pub fn new(
+        agent_name: impl Into<String>,
+        session_id: i64,
+        event_sender: Sender<MiddlewareEvent>,
+        tool_registry: Arc<ToolRegistry>,
+    ) -> Self {
+        Self {
+            agent_name: agent_name.into(),
+            session_id,
+            event_sender,
+            tool_registry,
+        }
+    }
+
     pub fn agent_name(&self) -> &str {
         &self.agent_name
     }
 
     pub fn session_id(&self) -> i64 {
         self.session_id
+    }
+
+    pub fn tool_registry(&self) -> &ToolRegistry {
+        self.tool_registry.as_ref()
     }
 }
 
@@ -64,6 +84,7 @@ pub struct AgentSession {
     pub(crate) middlewares: Vec<Arc<dyn Middleware>>,
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model_options: ModelOptions,
+    pub(crate) tool_registry: Arc<ToolRegistry>,
 }
 
 impl AgentSession {
@@ -74,7 +95,17 @@ impl AgentSession {
             middlewares: config.middlewares,
             provider: config.provider,
             model_options: config.model_options,
+            tool_registry: Arc::new(ToolRegistry::new()),
         }
+    }
+
+    pub fn context(&self, event_sender: Sender<MiddlewareEvent>) -> Context {
+        Context::new(
+            self.agent_name.clone(),
+            self.session_id,
+            event_sender,
+            Arc::clone(&self.tool_registry),
+        )
     }
 
     pub async fn start(
@@ -84,11 +115,7 @@ impl AgentSession {
     ) -> anyhow::Result<AgentSessionHandle> {
         let (activation_sender, activation_receiver) = tokio::sync::mpsc::channel(32);
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(32);
-        let ctx = Context {
-            agent_name: self.agent_name.clone(),
-            session_id: self.session_id,
-            event_sender,
-        };
+        let ctx = self.context(event_sender);
 
         self.init(&ctx).await?;
 
@@ -123,6 +150,11 @@ impl AgentSession {
         ctx: Context,
         mut request: ChatRequest,
     ) -> anyhow::Result<ChatResponse> {
+        if let Err(error) = self.inject_registered_tool_specs(&ctx, &mut request) {
+            self.run_error_hooks(&ctx, &error, 0).await;
+            return Err(error);
+        }
+
         for (index, middleware) in self.middlewares.iter().enumerate() {
             match middleware.before_chat(&ctx, &mut request).await {
                 Ok(MiddlewareFlow::Continue) => {}
@@ -168,6 +200,30 @@ impl AgentSession {
         }
 
         Ok(response)
+    }
+
+    fn inject_registered_tool_specs(
+        &self,
+        ctx: &Context,
+        request: &mut ChatRequest,
+    ) -> anyhow::Result<()> {
+        if !self.model_options.capabilities.tools {
+            return Ok(());
+        }
+
+        let mut names = request
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<BTreeSet<_>>();
+
+        for spec in ctx.tool_registry().tool_specs()? {
+            if names.insert(spec.name.clone()) {
+                request.tools.push(spec);
+            }
+        }
+
+        Ok(())
     }
 
     async fn run_loop(
@@ -355,11 +411,13 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    use serde_json::{Value, json};
     use turso::Builder;
 
     use crate::{
         agent::{
             middleware::{AgentActivation, Middleware, MiddlewareEvent, MiddlewareFlow},
+            tool::{Tool, ToolRegistry, ToolResult, ToolSpec},
             types::ChatResponse,
         },
         entity::{Entity, message::Message, session::Session},
@@ -414,6 +472,53 @@ mod tests {
         }
     }
 
+    struct RegisteredTool;
+
+    #[async_trait::async_trait]
+    impl Tool for RegisteredTool {
+        fn name(&self) -> &'static str {
+            "registered_tool"
+        }
+
+        fn description(&self) -> &'static str {
+            "registered test tool"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string" }
+                }
+            })
+        }
+
+        async fn call(&self, _args: Value) -> ToolResult<Value> {
+            Ok(json!({ "ok": true }))
+        }
+    }
+
+    struct RegisterToolMiddleware;
+
+    #[async_trait::async_trait]
+    impl Middleware for RegisterToolMiddleware {
+        async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
+            ctx.tool_registry().register(Arc::new(RegisteredTool))
+        }
+    }
+
+    struct ToolCapturingProvider {
+        tools: Arc<Mutex<Option<Vec<ToolSpec>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ToolCapturingProvider {
+        async fn complete(&self, request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
+            *self.tools.lock().unwrap() = Some(request.chat.tools);
+            Ok(chat_response("provider"))
+        }
+    }
+
     async fn connection() -> anyhow::Result<(Connection, Session)> {
         let db = Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
@@ -426,6 +531,7 @@ mod tests {
     async fn middleware_can_short_circuit_provider() -> anyhow::Result<()> {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
+        let tool_registry = Arc::new(ToolRegistry::new());
         let agent = AgentSession {
             agent_name: "Neko".to_owned(),
             session_id: 1,
@@ -434,15 +540,12 @@ mod tests {
                 called: Arc::clone(&provider_called),
             }),
             model_options: ModelOptions::default(),
+            tool_registry: Arc::clone(&tool_registry),
         };
 
         let response = agent
             .interact(
-                Context {
-                    agent_name: "Neko".to_owned(),
-                    session_id: 1,
-                    event_sender,
-                },
+                Context::new("Neko", 1, event_sender, tool_registry),
                 ChatRequest {
                     messages: Vec::new(),
                     system_prompt: None,
@@ -460,6 +563,7 @@ mod tests {
     async fn middleware_can_activate_agent_from_init() -> anyhow::Result<()> {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(16);
+        let tool_registry = Arc::new(ToolRegistry::new());
         let agent = AgentSession {
             agent_name: "Neko".to_owned(),
             session_id: 1,
@@ -468,14 +572,11 @@ mod tests {
                 called: Arc::clone(&provider_called),
             }),
             model_options: ModelOptions::default(),
+            tool_registry: Arc::clone(&tool_registry),
         };
 
         agent
-            .init(&Context {
-                agent_name: "Neko".to_owned(),
-                session_id: 1,
-                event_sender,
-            })
+            .init(&Context::new("Neko", 1, event_sender, tool_registry))
             .await?;
 
         assert_eq!(
@@ -500,6 +601,7 @@ mod tests {
                 called: Arc::clone(&provider_called),
             }),
             model_options: ModelOptions::default(),
+            tool_registry: Arc::new(ToolRegistry::new()),
         };
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
         let handle = agent.start(conn.clone(), output_sender).await?;
@@ -544,6 +646,7 @@ mod tests {
                 called: Arc::clone(&provider_called),
             }),
             model_options: ModelOptions::default(),
+            tool_registry: Arc::new(ToolRegistry::new()),
         };
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
         let _handle = agent.start(conn.clone(), output_sender).await?;
@@ -563,6 +666,73 @@ mod tests {
         assert_eq!(messages[1].role, "assistant");
         assert!(provider_called.load(Ordering::SeqCst));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registered_tools_are_injected_when_model_supports_tools() -> anyhow::Result<()> {
+        let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
+        let captured_tools = Arc::new(Mutex::new(None));
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let agent = AgentSession {
+            agent_name: "Neko".to_owned(),
+            session_id: 1,
+            middlewares: vec![Arc::new(RegisterToolMiddleware)],
+            provider: Arc::new(ToolCapturingProvider {
+                tools: Arc::clone(&captured_tools),
+            }),
+            model_options: ModelOptions {
+                capabilities: ModelCapabilities {
+                    tools: true,
+                    ..ModelCapabilities::default()
+                },
+                ..ModelOptions::default()
+            },
+            tool_registry: Arc::clone(&tool_registry),
+        };
+        let ctx = Context::new("Neko", 1, event_sender, tool_registry);
+
+        agent.init(&ctx).await?;
+        agent.interact(ctx, ChatRequest::default()).await?;
+
+        let tools = captured_tools
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider should receive a request");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "registered_tool");
+        assert_eq!(tools[0].description, "registered test tool");
+        assert_eq!(tools[0].parameters_schema["type"], "object");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registered_tools_are_not_injected_when_model_lacks_tools() -> anyhow::Result<()> {
+        let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
+        let captured_tools = Arc::new(Mutex::new(None));
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let agent = AgentSession {
+            agent_name: "Neko".to_owned(),
+            session_id: 1,
+            middlewares: vec![Arc::new(RegisterToolMiddleware)],
+            provider: Arc::new(ToolCapturingProvider {
+                tools: Arc::clone(&captured_tools),
+            }),
+            model_options: ModelOptions::default(),
+            tool_registry: Arc::clone(&tool_registry),
+        };
+        let ctx = Context::new("Neko", 1, event_sender, tool_registry);
+
+        agent.init(&ctx).await?;
+        agent.interact(ctx, ChatRequest::default()).await?;
+
+        let tools = captured_tools
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider should receive a request");
+        assert!(tools.is_empty());
         Ok(())
     }
 
@@ -588,6 +758,7 @@ mod tests {
             reasoning: true,
         };
         let observed_capabilities = Arc::new(Mutex::new(None));
+        let tool_registry = Arc::new(ToolRegistry::new());
         let agent = AgentSession {
             agent_name: "Neko".to_owned(),
             session_id: 1,
@@ -599,15 +770,12 @@ mod tests {
                 capabilities: capabilities.clone(),
                 ..ModelOptions::default()
             },
+            tool_registry: Arc::clone(&tool_registry),
         };
 
         agent
             .interact(
-                Context {
-                    agent_name: "Neko".to_owned(),
-                    session_id: 1,
-                    event_sender,
-                },
+                Context::new("Neko", 1, event_sender, tool_registry),
                 ChatRequest::default(),
             )
             .await?;
@@ -645,6 +813,7 @@ mod tests {
     async fn provider_error_triggers_middleware_error_hook() {
         let error_hook_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
+        let tool_registry = Arc::new(ToolRegistry::new());
         let agent = AgentSession {
             agent_name: "Neko".to_owned(),
             session_id: 1,
@@ -653,15 +822,12 @@ mod tests {
             })],
             provider: Arc::new(FailingProvider),
             model_options: ModelOptions::default(),
+            tool_registry: Arc::clone(&tool_registry),
         };
 
         let result = agent
             .interact(
-                Context {
-                    agent_name: "Neko".to_owned(),
-                    session_id: 1,
-                    event_sender,
-                },
+                Context::new("Neko", 1, event_sender, tool_registry),
                 ChatRequest::default(),
             )
             .await;

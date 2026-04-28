@@ -1,5 +1,6 @@
 use turso::Connection;
 
+pub mod channel_chat_agent;
 pub mod message;
 pub mod session;
 

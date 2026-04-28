@@ -1,6 +1,7 @@
 mod channel;
+mod types;
 
-pub mod entity;
+pub use types::{ChannelId, ChannelName, ChatId, ChatName, ReplyTarget, SenderId, SenderName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -13,25 +14,35 @@ pub enum Event {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    SendMessage { target: String, content: String },
-    StartTyping { target: String },
-    StopTyping { target: String },
+    SendMessage {
+        target: ReplyTarget,
+        content: String,
+    },
+    StartTyping {
+        target: ReplyTarget,
+    },
+    StopTyping {
+        target: ReplyTarget,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelInfo {
-    pub name: String,
+    pub id: ChannelId,
+    pub name: ChannelName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatInfo {
-    pub name: String,
-    pub reply_target: String,
+    pub id: ChatId,
+    pub name: ChatName,
+    pub reply_target: ReplyTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SenderInfo {
-    pub name: String,
+    pub id: SenderId,
+    pub name: SenderName,
 }
 
 #[async_trait::async_trait]
@@ -43,5 +54,35 @@ pub trait Channel: Send + Sync {
 
     async fn send(&self, request: Request) -> anyhow::Result<()>;
 
-    async fn get_contact_list(&self, agent_name: &str) -> anyhow::Result<Vec<String>>;
+    async fn list_chats(&self) -> anyhow::Result<Vec<ChatInfo>> {
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_models_use_domain_types() {
+        let chat = ChatInfo {
+            id: ChatId::from("chat-1"),
+            name: ChatName::from("Alice"),
+            reply_target: ReplyTarget::from("target-1"),
+        };
+        let request = Request::SendMessage {
+            target: chat.reply_target.clone(),
+            content: "hello".to_owned(),
+        };
+
+        assert_eq!(chat.id.as_str(), "chat-1");
+        assert_eq!(chat.name.as_str(), "Alice");
+        assert_eq!(
+            request,
+            Request::SendMessage {
+                target: ReplyTarget::from("target-1"),
+                content: "hello".to_owned(),
+            }
+        );
+    }
 }
