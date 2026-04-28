@@ -24,6 +24,11 @@ pub enum ProviderConfig {
         model: String,
         base_url: Option<String>,
     },
+    DeepSeek {
+        api_key: String,
+        model: String,
+        base_url: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -69,7 +74,9 @@ mod tests {
                     Some("https://example.test/backend-api/codex")
                 );
             }
-            ProviderConfig::OpenAI { .. } => panic!("expected OpenAICodex config"),
+            ProviderConfig::OpenAI { .. } | ProviderConfig::DeepSeek { .. } => {
+                panic!("expected OpenAICodex config")
+            }
         }
     }
 
@@ -78,6 +85,42 @@ mod tests {
         let result = serde_json::from_value::<ProviderConfig>(json!({
             "type": "OpenAICodex",
             "access_token": "token",
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deepseek_provider_config_deserializes_with_api_key() {
+        let config: ProviderConfig = serde_json::from_value(json!({
+            "type": "DeepSeek",
+            "api_key": "sk-test",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com",
+        }))
+        .unwrap();
+
+        match config {
+            ProviderConfig::DeepSeek {
+                api_key,
+                model,
+                base_url,
+            } => {
+                assert_eq!(api_key, "sk-test");
+                assert_eq!(model, "deepseek-v4-pro");
+                assert_eq!(base_url.as_deref(), Some("https://api.deepseek.com"));
+            }
+            ProviderConfig::OpenAI { .. } | ProviderConfig::OpenAICodex { .. } => {
+                panic!("expected DeepSeek config")
+            }
+        }
+    }
+
+    #[test]
+    fn deepseek_provider_config_requires_model() {
+        let result = serde_json::from_value::<ProviderConfig>(json!({
+            "type": "DeepSeek",
+            "api_key": "sk-test",
         }));
 
         assert!(result.is_err());
