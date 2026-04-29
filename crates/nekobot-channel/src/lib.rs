@@ -1,4 +1,4 @@
-mod channel;
+pub mod channel;
 mod types;
 
 pub use types::{ChannelId, ChannelName, ChatId, ChatName, ReplyTarget, SenderId, SenderName};

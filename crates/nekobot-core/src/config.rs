@@ -140,7 +140,10 @@ impl MiddlewareConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ChannelConfig {
-    QQ {},
+    QQ {
+        app_id: String,
+        client_secret: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -381,7 +384,7 @@ mod tests {
     #[test]
     fn config_validates_agent_provider_and_model_references() {
         let config: Config = serde_json::from_value(json!({
-            "channels": [{ "type": "QQ" }],
+            "channels": [{ "type": "QQ", "app_id": "test-app-id", "client_secret": "test-secret" }],
             "providers": [
                 {
                     "type": "DeepSeek",
