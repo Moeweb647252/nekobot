@@ -1,3 +1,5 @@
+//! Agent session management, middleware pipeline, tool injection, and provider-based request handling.
+
 use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
@@ -23,15 +25,21 @@ pub mod middleware;
 pub mod tool;
 pub mod types;
 
+/// Immutable snapshot of an agent session's identity and channels, passed to middleware and tools.
 #[derive(Clone)]
 pub struct Context {
+    /// Name of the agent that owns this session.
     pub agent_name: String,
+    /// Persistent database identifier for the session.
     pub session_id: i64,
+    /// Sender for middleware-triggered events (activations, etc.).
     pub event_sender: Sender<MiddlewareEvent>,
+    /// Registry of runtime-registered tools available to this agent.
     pub tool_registry: Arc<ToolRegistry>,
 }
 
 impl Context {
+    /// Creates a new context with the given agent name, session id, event sender, and tool registry.
     pub fn new(
         agent_name: impl Into<String>,
         session_id: i64,
@@ -46,32 +54,39 @@ impl Context {
         }
     }
 
+    /// Returns the agent name associated with this context.
     pub fn agent_name(&self) -> &str {
         &self.agent_name
     }
 
+    /// Returns the persistent session identifier.
     pub fn session_id(&self) -> i64 {
         self.session_id
     }
 
+    /// Returns a reference to the tool registry for runtime tool lookups.
     pub fn tool_registry(&self) -> &ToolRegistry {
         self.tool_registry.as_ref()
     }
 }
 
+/// Factory function type that creates a middleware instance from its serialized configuration.
 pub type MiddlewareCreateFn =
     Arc<dyn Fn(&MiddlewareConfig) -> anyhow::Result<Arc<dyn Middleware>> + Send + Sync>;
 
+/// Registry that maps middleware names to factory functions for dynamic instantiation.
 #[derive(Clone, Default)]
 pub struct MiddlewareRegistry {
     factories: HashMap<String, MiddlewareCreateFn>,
 }
 
 impl MiddlewareRegistry {
+    /// Creates an empty middleware registry.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Registers a factory function under the given name; returns an error on duplicates or empty names.
     pub fn register<F>(&mut self, name: impl Into<String>, create: F) -> anyhow::Result<()>
     where
         F: Fn(&MiddlewareConfig) -> anyhow::Result<Arc<dyn Middleware>> + Send + Sync + 'static,
@@ -89,6 +104,7 @@ impl MiddlewareRegistry {
         Ok(())
     }
 
+    /// Looks up the factory for the given config's name and creates a middleware instance, returning `None` if not found.
     pub fn create(&self, config: &MiddlewareConfig) -> anyhow::Result<Option<Arc<dyn Middleware>>> {
         let Some(factory) = self.factories.get(&config.name) else {
             return Ok(None);
@@ -100,6 +116,7 @@ impl MiddlewareRegistry {
     }
 }
 
+/// Configuration bundle used to construct an `AgentSession`, holding the resolved provider, middleware list, and model options.
 #[derive(Clone)]
 pub struct AgentSessionConfig {
     pub agent_name: String,
@@ -109,6 +126,7 @@ pub struct AgentSessionConfig {
 }
 
 impl AgentSessionConfig {
+    /// Builds a session config from a static `AgentConfig`, resolving middlewares through the registry.
     pub fn from_agent_config(
         agent: &crate::config::AgentConfig,
         provider: Arc<dyn Provider>,
@@ -124,6 +142,7 @@ impl AgentSessionConfig {
         ))
     }
 
+    /// Creates a session config directly from its constituent parts.
     pub fn new(
         agent_name: impl Into<String>,
         provider: Arc<dyn Provider>,
@@ -139,6 +158,7 @@ impl AgentSessionConfig {
     }
 }
 
+/// Resolves a slice of `MiddlewareConfig` entries into middleware instances via the registry, skipping unrecognized names.
 pub fn middlewares_from_config(
     configs: &[MiddlewareConfig],
     middleware_registry: &MiddlewareRegistry,
@@ -152,8 +172,11 @@ pub fn middlewares_from_config(
     Ok(middlewares)
 }
 
+/// An agent session that orchestrates the middleware pipeline, provider calls, and event loop for a single conversation.
 pub struct AgentSession {
+    /// Persistent database identifier for this session.
     pub session_id: i64,
+    /// Name of the agent that owns this session.
     pub agent_name: String,
     pub(crate) middlewares: Vec<Arc<dyn Middleware>>,
     pub(crate) provider: Arc<dyn Provider>,
@@ -162,6 +185,7 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
+    /// Creates a new agent session from a session id and configuration.
     pub fn new(session_id: i64, config: AgentSessionConfig) -> Self {
         Self {
             session_id,
@@ -173,6 +197,7 @@ impl AgentSession {
         }
     }
 
+    /// Builds a `Context` from this session, binding the given event sender.
     pub fn context(&self, event_sender: Sender<MiddlewareEvent>) -> Context {
         Context::new(
             self.agent_name.clone(),
@@ -182,6 +207,7 @@ impl AgentSession {
         )
     }
 
+    /// Initializes middlewares and spawns the background event loop, returning a handle that can send activations.
     pub async fn start(
         self,
         app_db: Connection,
@@ -211,6 +237,7 @@ impl AgentSession {
         })
     }
 
+    /// Runs the `init` hook on every middleware in order.
     pub async fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         for middleware in &self.middlewares {
             middleware.init(ctx).await?;
@@ -219,6 +246,7 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Runs the full middleware pipeline and, if not short-circuited, calls the provider to generate a response.
     pub async fn interact(
         &self,
         ctx: Context,
@@ -413,6 +441,7 @@ impl AgentSession {
         }
     }
 
+    /// Loads persisted messages from the database and builds a `ChatRequest` for the current session.
     async fn build_chat_request(&self, app_db: &Connection) -> anyhow::Result<ChatRequest> {
         let messages = Message::list_by_session(app_db, self.session_id)
             .await?
@@ -459,14 +488,19 @@ impl AgentSession {
     }
 }
 
+/// A handle to a running agent session that can send activations (channel messages or middleware events).
 #[derive(Clone)]
 pub struct AgentSessionHandle {
+    /// Persistent database identifier for the session.
     pub session_id: i64,
+    /// Sender for triggering activations in the background event loop.
     pub activation_sender: Sender<AgentActivation>,
 }
 
+/// Output produced by an agent session, sent through the output channel to the application layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentOutput {
+    /// Instructs the application to send a message to the chat with the given content.
     SendMessage { session_id: i64, content: String },
 }
 

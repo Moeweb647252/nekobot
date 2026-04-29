@@ -1,7 +1,10 @@
+//! Session entity — persistent chat session storage.
+
 use turso::Connection;
 
 use crate::entity::{Entity, enable_foreign_keys};
 
+/// A chat session that groups messages under an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: i64,
@@ -9,6 +12,7 @@ pub struct Session {
 }
 
 impl Session {
+    /// Insert a new session and return it.
     pub async fn create(conn: &Connection, agent_name: impl Into<String>) -> anyhow::Result<Self> {
         enable_foreign_keys(conn).await?;
 
@@ -25,6 +29,7 @@ impl Session {
         })
     }
 
+    /// Look up a session by its primary key.
     pub async fn get(conn: &Connection, id: i64) -> anyhow::Result<Option<Self>> {
         let mut rows = conn
             .query("SELECT id, agent_name FROM sessions WHERE id = ?1", (id,))
@@ -36,6 +41,7 @@ impl Session {
             .transpose()
     }
 
+    /// Return all sessions ordered by id.
     pub async fn list(conn: &Connection) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
             .query("SELECT id, agent_name FROM sessions ORDER BY id", ())
@@ -43,6 +49,7 @@ impl Session {
         Self::collect_rows(&mut rows).await
     }
 
+    /// Return all sessions belonging to the given agent name.
     pub async fn list_by_agent(
         conn: &Connection,
         agent_name: impl AsRef<str>,
@@ -56,6 +63,7 @@ impl Session {
         Self::collect_rows(&mut rows).await
     }
 
+    /// Update the agent name of a session and return the updated row.
     pub async fn update(
         conn: &Connection,
         id: i64,
@@ -78,6 +86,7 @@ impl Session {
         Self::get(conn, id).await
     }
 
+    /// Delete a session by id; returns true if a row was removed.
     pub async fn delete(conn: &Connection, id: i64) -> anyhow::Result<bool> {
         enable_foreign_keys(conn).await?;
         let changed = conn

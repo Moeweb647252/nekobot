@@ -1,3 +1,5 @@
+//! Channel-chat-agent mapping entity — links a channel+chat combination to an agent session.
+
 use nekobot_channel::{ChannelId, ChannelName, ChatId, ChatName, ReplyTarget};
 use turso::Connection;
 
@@ -44,10 +46,12 @@ macro_rules! string_newtype {
     };
 }
 
+/// Newtype for the `channel_chat_agents` table primary key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChannelChatAgentId(i64);
 
 impl ChannelChatAgentId {
+    /// Return the underlying `i64` value.
     pub fn as_i64(self) -> i64 {
         self.0
     }
@@ -59,10 +63,12 @@ impl From<i64> for ChannelChatAgentId {
     }
 }
 
+/// Newtype for a session foreign key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(i64);
 
 impl SessionId {
+    /// Return the underlying `i64` value.
     pub fn as_i64(self) -> i64 {
         self.0
     }
@@ -76,6 +82,7 @@ impl From<i64> for SessionId {
 
 string_newtype!(AgentName);
 
+/// A row in the `channel_chat_agents` table — binds a channel+chat to an agent session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelChatAgent {
     pub id: ChannelChatAgentId,
@@ -88,6 +95,7 @@ pub struct ChannelChatAgent {
     pub session_id: SessionId,
 }
 
+/// Data needed to insert a new [`ChannelChatAgent`] row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewChannelChatAgent {
     pub channel_id: ChannelId,
@@ -100,6 +108,7 @@ pub struct NewChannelChatAgent {
 }
 
 impl ChannelChatAgent {
+    /// Insert a new channel-chat-agent mapping and return it.
     pub async fn create(
         conn: &Connection,
         new_mapping: NewChannelChatAgent,
@@ -134,6 +143,7 @@ impl ChannelChatAgent {
         })
     }
 
+    /// Look up a mapping by its natural key (channel, chat, agent).
     pub async fn get_by_channel_chat_agent(
         conn: &Connection,
         channel_id: &ChannelId,
@@ -155,6 +165,7 @@ impl ChannelChatAgent {
             .transpose()
     }
 
+    /// Look up a mapping by its session id.
     pub async fn get_by_session_id(
         conn: &Connection,
         session_id: SessionId,
@@ -174,6 +185,7 @@ impl ChannelChatAgent {
             .transpose()
     }
 
+    /// Update the cached channel/chat metadata and reply target for a mapping.
     pub async fn update_chat_cache(
         conn: &Connection,
         id: ChannelChatAgentId,
@@ -204,6 +216,7 @@ impl ChannelChatAgent {
         Self::get_by_id(conn, id).await
     }
 
+    /// Look up a mapping by its primary key.
     pub async fn get_by_id(
         conn: &Connection,
         id: ChannelChatAgentId,

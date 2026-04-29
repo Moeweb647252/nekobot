@@ -1,3 +1,9 @@
+//! Concrete provider implementations for the NekoBot framework.
+//!
+//! Provides [`DeepSeekProvider`] and [`OpenAiCodexProvider`], plus a
+//! convenience function [`register_providers`] that registers both into a
+//! [`ProviderRegistry`](nekobot_core::provider::ProviderRegistry).
+
 use std::sync::Arc;
 
 use nekobot_core::config::ProviderConfig;
@@ -9,6 +15,9 @@ pub use deepseek::*;
 pub use nekobot_core::provider::*;
 pub use openai_codex::*;
 
+/// Register the DeepSeek and OpenAI Codex provider factories into a registry.
+///
+/// Call this once at startup before [`NekoBot::run`](nekobot_core::NekoBot::run).
 pub fn register_providers(
     registry: &mut nekobot_core::provider::ProviderRegistry,
 ) -> anyhow::Result<()> {

@@ -1,3 +1,6 @@
+//! Channel runtime — connects a channel adapter to an agent session, routing incoming events
+//! and outgoing replies.
+
 use std::collections::HashMap;
 
 use nekobot_channel::{Channel, ChannelInfo, ChatInfo, Event, ReplyTarget, Request};
@@ -24,6 +27,8 @@ type ChannelAgentKey = (
     AgentName,
 );
 
+/// Runtime that ties a [`Channel`] adapter to an [`AgentSession`], managing per-chat session
+/// lifecycle and routing messages between the channel and the agent.
 pub struct ChannelRuntime {
     channel: Box<dyn Channel>,
     context: ChannelContext,
@@ -32,11 +37,13 @@ pub struct ChannelRuntime {
     session_targets: HashMap<SessionId, ReplyTarget>,
 }
 
+/// Database handle and shared context for a [`ChannelRuntime`].
 pub struct ChannelContext {
     pub(crate) app_db: Connection,
 }
 
 impl ChannelRuntime {
+    /// Create a new [`ChannelRuntime`] for the given channel, context, and agent config.
     pub fn new(
         channel: Box<dyn Channel>,
         context: ChannelContext,
@@ -188,6 +195,7 @@ impl ChannelRuntime {
 }
 
 impl Runtime for ChannelRuntime {
+    /// Prepare tables, register with the channel, and enter the event loop.
     async fn run(&mut self) -> anyhow::Result<()> {
         self.prepare_tables().await?;
 

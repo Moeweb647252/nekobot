@@ -1,3 +1,5 @@
+//! DeepSeek API provider implementation.
+
 use std::{fmt, time::Duration};
 
 use futures_util::StreamExt;
@@ -25,6 +27,7 @@ const RESERVED_BODY_KEYS: &[&str] = &[
     "tool_choice",
 ];
 
+/// DeepSeek API provider that communicates with the DeepSeek chat completions endpoint.
 pub struct DeepSeekProvider {
     api_key: String,
     model: String,
@@ -33,6 +36,7 @@ pub struct DeepSeekProvider {
 }
 
 impl DeepSeekProvider {
+    /// Creates a new DeepSeek provider with the given API key and model, using the default base URL.
     pub fn new(
         api_key: impl Into<String>,
         model: impl Into<String>,
@@ -40,6 +44,7 @@ impl DeepSeekProvider {
         Self::from_config(api_key, model, None::<String>)
     }
 
+    /// Creates a new DeepSeek provider with a custom base URL, falling back to the default if none is provided.
     pub fn from_config(
         api_key: impl Into<String>,
         model: impl Into<String>,
@@ -76,10 +81,12 @@ impl DeepSeekProvider {
         })
     }
 
+    /// Returns the configured model name.
     pub fn model(&self) -> &str {
         &self.model
     }
 
+    /// Returns the configured base URL.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -158,10 +165,12 @@ impl fmt::Debug for DeepSeekProvider {
 
 #[async_trait::async_trait]
 impl Provider for DeepSeekProvider {
+    /// Returns the provider identifier, `"deepseek"`.
     fn id(&self) -> &'static str {
         "deepseek"
     }
 
+    /// Sends a non-streaming chat completion request and returns the full response.
     async fn complete(&self, request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
         let body = self.build_body(&request, false)?;
         let response = self
@@ -187,6 +196,8 @@ impl Provider for DeepSeekProvider {
         Ok(parse_response(&response))
     }
 
+    /// Sends a streaming chat completion request, emitting deltas via the given channel
+    /// and returning the accumulated response once the stream finishes.
     async fn stream(
         &self,
         request: ProviderRequest,

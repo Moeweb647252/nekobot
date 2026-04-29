@@ -1,3 +1,5 @@
+//! Tool system — callable functions that agents can invoke via provider tool-use.
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, RwLock},
@@ -6,6 +8,7 @@ use std::{
 use async_trait::async_trait;
 use serde_json::Value;
 
+/// Errors that can occur during tool look-up or execution.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("invalid arguments: {0}")]
@@ -20,6 +23,8 @@ pub enum ToolError {
 
 pub type ToolResult<T> = Result<T, ToolError>;
 
+/// Statically-describable metadata for a tool, suitable for injection into
+/// provider tool-use schemas.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolSpec {
     pub name: String,
@@ -28,6 +33,7 @@ pub struct ToolSpec {
 }
 
 impl ToolSpec {
+    /// Derive a [`ToolSpec`] from a [`Tool`] implementation.
     pub fn from_tool(tool: &dyn Tool) -> Self {
         Self {
             name: tool.name().to_owned(),
@@ -37,17 +43,26 @@ impl ToolSpec {
     }
 }
 
+/// A callable tool that can be registered in a [`ToolRegistry`].
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// Unique name used in provider tool-use schemas.
     fn name(&self) -> &'static str;
 
+    /// Human-readable description.
     fn description(&self) -> &'static str;
 
+    /// JSON Schema describing the tool's parameters.
     fn parameters_schema(&self) -> Value;
 
+    /// Invoke the tool with JSON-encoded arguments.
     async fn call(&self, args: Value) -> ToolResult<Value>;
 }
 
+/// Registry of named [`Tool`] implementations.
+///
+/// Uses `RwLock<BTreeMap>` for concurrent read access. Tools are injected
+/// into provider requests when the model supports tool use.
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: RwLock<BTreeMap<String, Arc<dyn Tool>>>,
@@ -58,6 +73,7 @@ impl ToolRegistry {
         Self::default()
     }
 
+    /// Register a tool. Returns an error if a tool with the same name already exists.
     pub fn register(&self, tool: Arc<dyn Tool>) -> anyhow::Result<()> {
         let name = tool.name();
         if name.trim().is_empty() {
@@ -77,10 +93,14 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Look up a tool by name. Returns `None` if not found.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.read().ok()?.get(name).cloned()
     }
 
+    /// Return metadata specs for all registered tools.
+    ///
+    /// Used to inject tool-use schemas into provider requests.
     pub fn tool_specs(&self) -> anyhow::Result<Vec<ToolSpec>> {
         let tools = self
             .tools
@@ -93,6 +113,7 @@ impl ToolRegistry {
             .collect())
     }
 
+    /// Return `true` if no tools are registered.
     pub fn is_empty(&self) -> anyhow::Result<bool> {
         let tools = self
             .tools

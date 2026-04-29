@@ -1,9 +1,12 @@
+//! Message entity — persistent chat message storage.
+
 use std::fmt::Display;
 
 use turso::Connection;
 
 use crate::entity::{Entity, enable_foreign_keys, session::Session};
 
+/// A single chat message belonging to a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub id: String,
@@ -14,6 +17,7 @@ pub struct Message {
 }
 
 impl Message {
+    /// Insert a new message and return it.
     pub async fn create(
         conn: &Connection,
         id: impl Into<String>,
@@ -50,6 +54,7 @@ impl Message {
         })
     }
 
+    /// Look up a message by its text primary key.
     pub async fn get(conn: &Connection, id: impl AsRef<str>) -> anyhow::Result<Option<Self>> {
         let mut rows = conn
             .query(
@@ -65,6 +70,7 @@ impl Message {
             .transpose()
     }
 
+    /// Return all messages ordered by insertion order.
     pub async fn list(conn: &Connection) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
             .query(
@@ -76,6 +82,7 @@ impl Message {
         Self::collect_rows(&mut rows).await
     }
 
+    /// Return all messages belonging to a given session, ordered by insertion.
     pub async fn list_by_session(conn: &Connection, session_id: i64) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
             .query(
@@ -87,6 +94,7 @@ impl Message {
         Self::collect_rows(&mut rows).await
     }
 
+    /// Update all fields of a message and return the updated row.
     pub async fn update(
         conn: &Connection,
         id: impl AsRef<str>,
@@ -122,6 +130,7 @@ impl Message {
         Self::get(conn, id).await
     }
 
+    /// Delete a message by id; returns true if a row was removed.
     pub async fn delete(conn: &Connection, id: impl AsRef<str>) -> anyhow::Result<bool> {
         enable_foreign_keys(conn).await?;
         let changed = conn
@@ -172,6 +181,7 @@ impl Entity for Message {
     }
 }
 
+/// The role of a message sender (user, assistant, or a custom role).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     User,

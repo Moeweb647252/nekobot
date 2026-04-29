@@ -1,5 +1,11 @@
+//! String newtype wrappers for channel domain identifiers.
+//!
+//! Each type wraps a plain `String` to prevent accidental mixing of IDs,
+//! names, and targets across different concepts.
+
 macro_rules! string_newtype {
-    ($name:ident) => {
+    ($name:ident, $doc:literal) => {
+        #[doc = $doc]
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(String);
 
@@ -39,13 +45,13 @@ macro_rules! string_newtype {
     };
 }
 
-string_newtype!(ChannelId);
-string_newtype!(ChannelName);
-string_newtype!(ChatId);
-string_newtype!(ChatName);
-string_newtype!(SenderId);
-string_newtype!(SenderName);
-string_newtype!(ReplyTarget);
+string_newtype!(ChannelId, "Unique identifier for a channel instance.");
+string_newtype!(ChannelName, "Human-readable name of a channel.");
+string_newtype!(ChatId, "Unique identifier for a conversation within a channel.");
+string_newtype!(ChatName, "Human-readable name of a conversation.");
+string_newtype!(SenderId, "Unique identifier for a message sender.");
+string_newtype!(SenderName, "Human-readable name of a message sender.");
+string_newtype!(ReplyTarget, "Opaque routing token used to direct replies back to the correct conversation.");
 
 #[cfg(test)]
 mod tests {

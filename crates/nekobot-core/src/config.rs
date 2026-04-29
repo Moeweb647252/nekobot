@@ -1,3 +1,6 @@
+//! Configuration types for the nekobot application, including providers,
+//! agents, channels, middlewares, and serializable validation logic.
+
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
@@ -5,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::provider::ModelOptions;
 
+/// Top-level application configuration listing all channels, providers, and agents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -14,6 +18,8 @@ pub struct Config {
 }
 
 impl Config {
+    /// Validates the entire configuration, checking for duplicate/empty names,
+    /// missing models, unknown provider references, and invalid middlewares.
     pub fn validate(&self) -> Result<(), ConfigValidationError> {
         let mut provider_names = HashSet::new();
 
@@ -93,22 +99,28 @@ impl Config {
         Ok(())
     }
 
+    /// Looks up a provider by its configured name.
     pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers
             .iter()
             .find(|provider| provider.name() == name)
     }
 
+    /// Looks up an agent by its configured name.
     pub fn agent(&self, name: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|agent| agent.name == name)
     }
 
+    /// Resolves the full model options for a named agent by first finding the
+    /// agent config and then looking up its model within the referenced provider.
     pub fn model_options_for_agent(&self, agent_name: &str) -> Option<&ModelOptions> {
         let agent = self.agent(agent_name)?;
         self.provider(&agent.provider)?.model_options(&agent.model)
     }
 }
 
+/// Configuration for a single agent, referencing a provider, model, and
+/// an ordered list of middlewares.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
@@ -118,6 +130,8 @@ pub struct AgentConfig {
     pub middlewares: Vec<MiddlewareConfig>,
 }
 
+/// Configuration for a single middleware, identified by name with additional
+/// properties flattened from the serialized form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MiddlewareConfig {
     pub name: String,
@@ -137,23 +151,30 @@ impl MiddlewareConfig {
     }
 }
 
+/// Available chat channel integrations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ChannelConfig {
+    /// QQ Bot channel using the official QQ Bot API.
     QQ {
         app_id: String,
         client_secret: String,
     },
 }
 
+/// Supported LLM provider configurations, each with a name, credentials, and
+/// a list of available models.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ProviderConfig {
+    /// Standard OpenAI API provider (chat completions).
     OpenAI {
         name: String,
         api_key: String,
         models: Vec<ModelOptions>,
     },
+    /// OpenAI Codex provider using access-token-based authentication with an
+    /// optional account ID and custom base URL.
     OpenAICodex {
         name: String,
         access_token: String,
@@ -161,6 +182,7 @@ pub enum ProviderConfig {
         models: Vec<ModelOptions>,
         base_url: Option<String>,
     },
+    /// DeepSeek API provider with an optional custom base URL.
     DeepSeek {
         name: String,
         api_key: String,
@@ -170,6 +192,7 @@ pub enum ProviderConfig {
 }
 
 impl ProviderConfig {
+    /// Returns the provider's configured name.
     pub fn name(&self) -> &str {
         match self {
             ProviderConfig::OpenAI { name, .. }
@@ -178,6 +201,7 @@ impl ProviderConfig {
         }
     }
 
+    /// Returns the list of models configured for this provider.
     pub fn models(&self) -> &[ModelOptions] {
         match self {
             ProviderConfig::OpenAI { models, .. }
@@ -186,10 +210,12 @@ impl ProviderConfig {
         }
     }
 
+    /// Returns the first model in the list as the default.
     pub fn default_model_options(&self) -> Option<&ModelOptions> {
         self.models().first()
     }
 
+    /// Looks up a specific model by name within this provider.
     pub fn model_options(&self, name: &str) -> Option<&ModelOptions> {
         self.models()
             .iter()
@@ -197,6 +223,7 @@ impl ProviderConfig {
     }
 }
 
+/// Errors that can occur during configuration validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigValidationError {
     #[error("provider name cannot be empty")]

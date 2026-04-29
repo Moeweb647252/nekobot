@@ -1,3 +1,5 @@
+//! In-memory session handle used during message processing.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7,12 +9,18 @@ use crate::entity::{self, message::Message};
 
 static MESSAGE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// A handle to an active session, combining a database connection and session ID.
+///
+/// Used by [`AgentSession`](crate::agent::AgentSession) to persist messages.
 pub struct Session {
     pub session_id: i64,
     pub app_db: Connection,
 }
 
 impl Session {
+    /// Persist a chat message to the database.
+    ///
+    /// Generates a unique message ID from timestamp + atomic sequence.
     pub async fn add_message(
         &self,
         role: impl Into<String>,

@@ -1,11 +1,15 @@
+//! Chat message types shared across agents, providers, and middleware.
+
 use std::fmt::Display;
 
 use crate::agent::tool::ToolSpec;
 
+/// The role of a chat message participant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Role {
     User,
     Assistant,
+    /// Provider-specific role name (e.g. "system", "developer").
     Custom(String),
 }
 
@@ -19,12 +23,14 @@ impl Display for Role {
     }
 }
 
+/// An image attachment with inline binary data and MIME type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
     pub data: Vec<u8>,
     pub mime_type: String,
 }
 
+/// Token usage statistics returned by a provider.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
@@ -32,6 +38,7 @@ pub struct Usage {
     pub total_tokens: Option<u64>,
 }
 
+/// The content portion of a chat message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatMessageContent {
     pub content: String,
@@ -39,12 +46,14 @@ pub struct ChatMessageContent {
     pub images: Vec<Image>,
 }
 
+/// A single message in a chat conversation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: ChatMessageContent,
 }
 
+/// A complete chat completion request sent to a provider.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
@@ -52,6 +61,7 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSpec>,
 }
 
+/// A chat completion response from a provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatResponse {
     pub content: String,

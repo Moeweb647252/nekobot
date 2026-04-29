@@ -1,3 +1,8 @@
+//! OpenAI Codex API provider implementation.
+//!
+//! This module provides [`OpenAiCodexProvider`], a [`Provider`] that communicates with
+//! the OpenAI Codex completions API (chatgpt.com/backend-api/codex).
+
 use std::{fmt, time::Duration};
 
 use futures_util::StreamExt;
@@ -28,6 +33,7 @@ const RESERVED_BODY_KEYS: &[&str] = &[
     "include",
 ];
 
+/// OpenAI Codex API provider backed by the chatgpt.com/backend-api/codex endpoint.
 pub struct OpenAiCodexProvider {
     access_token: String,
     account_id: Option<String>,
@@ -37,6 +43,7 @@ pub struct OpenAiCodexProvider {
 }
 
 impl OpenAiCodexProvider {
+    /// Creates a new `OpenAiCodexProvider` with the given access token and model name.
     pub fn new(
         access_token: impl Into<String>,
         model: impl Into<String>,
@@ -44,6 +51,8 @@ impl OpenAiCodexProvider {
         Self::from_config(access_token, None::<String>, model, None::<String>)
     }
 
+    /// Creates a new `OpenAiCodexProvider` with full configuration including
+    /// optional account ID and custom base URL.
     pub fn from_config(
         access_token: impl Into<String>,
         account_id: Option<impl Into<String>>,
@@ -87,10 +96,12 @@ impl OpenAiCodexProvider {
         })
     }
 
+    /// Returns the model name configured for this provider.
     pub fn model(&self) -> &str {
         &self.model
     }
 
+    /// Returns the base URL of the Codex API endpoint.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -182,10 +193,12 @@ impl fmt::Debug for OpenAiCodexProvider {
 
 #[async_trait::async_trait]
 impl Provider for OpenAiCodexProvider {
+    /// Returns the provider identifier `"openai-codex"`.
     fn id(&self) -> &'static str {
         "openai-codex"
     }
 
+    /// Sends a synchronous completion request to the Codex API and returns the full response.
     async fn complete(&self, request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
         let body = self.build_body(&request, false)?;
         let response = self
@@ -207,6 +220,8 @@ impl Provider for OpenAiCodexProvider {
         Ok(parse_response(&response))
     }
 
+    /// Sends a streaming completion request to the Codex API, emitting
+    /// [`ProviderEvent`]s as chunks arrive via the given channel.
     async fn stream(
         &self,
         request: ProviderRequest,

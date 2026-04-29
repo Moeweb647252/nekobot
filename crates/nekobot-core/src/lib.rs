@@ -1,3 +1,9 @@
+//! NekoBot — a modular, multi-agent chatbot framework.
+//!
+//! The [`NekoBot`] struct is the top-level application entry point. It holds
+//! configuration, middleware/provider registries, and optional user-defined
+//! state, then wires everything together via [`run`](NekoBot::run).
+
 pub mod agent;
 pub mod config;
 pub mod entity;
@@ -5,6 +11,13 @@ pub mod provider;
 pub mod runtime;
 pub mod session;
 
+/// Top-level application struct.
+///
+/// Created via [`NekoBot::new`] with a [`config::Config`], then configured
+/// with middleware and provider registrations before calling [`run`](NekoBot::run).
+///
+/// The type parameter `S` allows injecting user-defined shared state
+/// (e.g. database pools, external service handles) via [`with_state`](NekoBot::with_state).
 pub struct NekoBot<S = ()> {
     config: config::Config,
     state: S,
@@ -13,6 +26,7 @@ pub struct NekoBot<S = ()> {
 }
 
 impl NekoBot<()> {
+    /// Create a new [`NekoBot`] from a parsed [`config::Config`].
     pub fn new(config: config::Config) -> Self {
         Self {
             config,
@@ -24,6 +38,10 @@ impl NekoBot<()> {
 }
 
 impl<S> NekoBot<S> {
+    /// Register a middleware factory by name.
+    ///
+    /// The factory closure receives a [`config::MiddlewareConfig`] and should
+    /// return an `Arc<dyn Middleware>`.
     pub fn with_middleware<F>(mut self, name: impl Into<String>, create: F) -> anyhow::Result<Self>
     where
         F: Fn(
@@ -37,6 +55,10 @@ impl<S> NekoBot<S> {
         Ok(self)
     }
 
+    /// Register a provider factory by name.
+    ///
+    /// The factory closure receives a [`config::ProviderConfig`] and should
+    /// return an `Arc<dyn Provider>`.
     pub fn with_provider<F>(mut self, name: impl Into<String>, create: F) -> anyhow::Result<Self>
     where
         F: Fn(&config::ProviderConfig) -> anyhow::Result<std::sync::Arc<dyn provider::Provider>>
@@ -48,6 +70,10 @@ impl<S> NekoBot<S> {
         Ok(self)
     }
 
+    /// Replace the user-defined state with a new value of a different type.
+    ///
+    /// This consumes the current `NekoBot<S>` and returns `NekoBot<T>`,
+    /// preserving config and registries.
     pub fn with_state<T>(self, state: T) -> NekoBot<T> {
         NekoBot {
             config: self.config,
@@ -57,22 +83,30 @@ impl<S> NekoBot<S> {
         }
     }
 
+    /// Return a shared reference to the middleware registry.
     pub fn middleware_registry(&self) -> &agent::MiddlewareRegistry {
         &self.middleware_registry
     }
 
+    /// Return a shared reference to the provider registry.
     pub fn provider_registry(&self) -> &provider::ProviderRegistry {
         &self.provider_registry
     }
 
+    /// Return a mutable reference to the provider registry.
     pub fn provider_registry_mut(&mut self) -> &mut provider::ProviderRegistry {
         &mut self.provider_registry
     }
 
+    #[allow(dead_code)]
     async fn init(&mut self) -> Result<(), anyhow::Error> {
         todo!("initialize db connections, agents, and runtimes")
     }
 
+    /// Start the bot: validate config, initialize the database, wire up
+    /// channel runtimes, and run them concurrently.
+    ///
+    /// Currently a placeholder — implementation is pending.
     pub async fn run(&mut self) -> Result<(), anyhow::Error> {
         todo!("assemble db connections, agents into runtimes, and run the hole system")
     }
