@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::provider::ModelOptions;
 
@@ -69,6 +70,10 @@ impl Config {
                 });
             }
 
+            for middleware in &agent.middlewares {
+                middleware.validate(&agent.name)?;
+            }
+
             let provider = self.provider(&agent.provider).ok_or_else(|| {
                 ConfigValidationError::UnknownAgentProvider {
                     agent: agent.name.clone(),
@@ -110,6 +115,26 @@ pub struct AgentConfig {
     pub name: String,
     pub provider: String,
     pub model: String,
+    pub middlewares: Vec<MiddlewareConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MiddlewareConfig {
+    pub name: String,
+    #[serde(flatten)]
+    pub data: Map<String, Value>,
+}
+
+impl MiddlewareConfig {
+    fn validate(&self, agent: &str) -> Result<(), ConfigValidationError> {
+        if self.name.trim().is_empty() {
+            return Err(ConfigValidationError::EmptyMiddlewareName {
+                agent: agent.to_owned(),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +219,9 @@ pub enum ConfigValidationError {
 
     #[error("agent {agent} must reference a model")]
     EmptyAgentModel { agent: String },
+
+    #[error("agent {agent} has a middleware with an empty name")]
+    EmptyMiddlewareName { agent: String },
 
     #[error("agent {agent} references unknown provider {provider}")]
     UnknownAgentProvider { agent: String, provider: String },
@@ -366,7 +394,8 @@ mod tests {
                 {
                     "name": "Neko",
                     "provider": "deepseek",
-                    "model": "deepseek-v4-pro"
+                    "model": "deepseek-v4-pro",
+                    "middlewares": []
                 }
             ]
         }))
@@ -393,7 +422,8 @@ mod tests {
                 {
                     "name": "Neko",
                     "provider": "deepseek",
-                    "model": "missing-model"
+                    "model": "missing-model",
+                    "middlewares": []
                 }
             ]
         }))
@@ -403,6 +433,71 @@ mod tests {
             config.validate(),
             Err(ConfigValidationError::UnknownAgentModel { .. })
         ));
+    }
+
+    #[test]
+    fn agent_config_requires_middlewares() {
+        let result = serde_json::from_value::<AgentConfig>(json!({
+            "name": "Neko",
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro"
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn middleware_config_deserializes_name_and_flattened_data() {
+        let config: MiddlewareConfig = serde_json::from_value(json!({
+            "name": "memory",
+            "path": "./memory.db",
+            "limit": 8
+        }))
+        .unwrap();
+
+        assert_eq!(config.name, "memory");
+        assert_eq!(config.data["path"], json!("./memory.db"));
+        assert_eq!(config.data["limit"], json!(8));
+    }
+
+    #[test]
+    fn middleware_config_requires_name() {
+        let result = serde_json::from_value::<MiddlewareConfig>(json!({
+            "path": "./memory.db"
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_rejects_empty_middleware_name() {
+        let config: Config = serde_json::from_value(json!({
+            "channels": [],
+            "providers": [
+                {
+                    "type": "DeepSeek",
+                    "name": "deepseek",
+                    "api_key": "sk-test",
+                    "models": [{ "model": "deepseek-v4-pro" }]
+                }
+            ],
+            "agents": [
+                {
+                    "name": "Neko",
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "middlewares": [{ "name": "" }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.validate(),
+            Err(ConfigValidationError::EmptyMiddlewareName {
+                agent: "Neko".to_owned(),
+            })
+        );
     }
 
     #[test]

@@ -1,5 +1,9 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
+use anyhow::Context as _;
 use tokio::sync::mpsc::{Receiver, Sender};
 use turso::Connection;
 
@@ -9,6 +13,7 @@ use crate::{
         tool::ToolRegistry,
         types::{ChatMessage, ChatMessageContent, ChatRequest, ChatResponse, Role},
     },
+    config::MiddlewareConfig,
     entity::message::{Message, Role as MessageRole},
     provider::{ModelOptions, Provider, ProviderRequest},
     session::Session as SessionStore,
@@ -54,6 +59,47 @@ impl Context {
     }
 }
 
+pub type MiddlewareCreateFn =
+    Arc<dyn Fn(&MiddlewareConfig) -> anyhow::Result<Arc<dyn Middleware>> + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct MiddlewareRegistry {
+    factories: HashMap<String, MiddlewareCreateFn>,
+}
+
+impl MiddlewareRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register<F>(&mut self, name: impl Into<String>, create: F) -> anyhow::Result<()>
+    where
+        F: Fn(&MiddlewareConfig) -> anyhow::Result<Arc<dyn Middleware>> + Send + Sync + 'static,
+    {
+        let name = name.into();
+        if name.trim().is_empty() {
+            anyhow::bail!("middleware factory name cannot be empty");
+        }
+
+        if self.factories.contains_key(&name) {
+            anyhow::bail!("duplicate middleware factory: {name}");
+        }
+
+        self.factories.insert(name, Arc::new(create));
+        Ok(())
+    }
+
+    pub fn create(&self, config: &MiddlewareConfig) -> anyhow::Result<Option<Arc<dyn Middleware>>> {
+        let Some(factory) = self.factories.get(&config.name) else {
+            return Ok(None);
+        };
+
+        factory(config)
+            .with_context(|| format!("failed to create middleware {}", config.name))
+            .map(Some)
+    }
+}
+
 #[derive(Clone)]
 pub struct AgentSessionConfig {
     pub agent_name: String,
@@ -63,6 +109,21 @@ pub struct AgentSessionConfig {
 }
 
 impl AgentSessionConfig {
+    pub fn from_agent_config(
+        agent: &crate::config::AgentConfig,
+        provider: Arc<dyn Provider>,
+        model_options: ModelOptions,
+        middleware_registry: &MiddlewareRegistry,
+    ) -> anyhow::Result<Self> {
+        let middlewares = middlewares_from_config(&agent.middlewares, middleware_registry)?;
+        Ok(Self::new(
+            agent.name.clone(),
+            provider,
+            model_options,
+            middlewares,
+        ))
+    }
+
     pub fn new(
         agent_name: impl Into<String>,
         provider: Arc<dyn Provider>,
@@ -76,6 +137,19 @@ impl AgentSessionConfig {
             model_options,
         }
     }
+}
+
+pub fn middlewares_from_config(
+    configs: &[MiddlewareConfig],
+    middleware_registry: &MiddlewareRegistry,
+) -> anyhow::Result<Vec<Arc<dyn Middleware>>> {
+    let mut middlewares = Vec::with_capacity(configs.len());
+    for config in configs {
+        if let Some(middleware) = middleware_registry.create(config)? {
+            middlewares.push(middleware);
+        }
+    }
+    Ok(middlewares)
 }
 
 pub struct AgentSession {
@@ -525,6 +599,112 @@ mod tests {
         Message::create_table(&conn).await?;
         let session = Session::create(&conn, "Neko").await?;
         Ok((conn, session))
+    }
+
+    #[test]
+    fn agent_session_config_builds_empty_middlewares_from_config() -> anyhow::Result<()> {
+        let provider_called = Arc::new(AtomicBool::new(false));
+        let registry = MiddlewareRegistry::new();
+        let agent_config = crate::config::AgentConfig {
+            name: "Neko".to_owned(),
+            provider: "deepseek".to_owned(),
+            model: "deepseek-v4-pro".to_owned(),
+            middlewares: Vec::new(),
+        };
+
+        let session_config = AgentSessionConfig::from_agent_config(
+            &agent_config,
+            Arc::new(StaticProvider {
+                called: Arc::clone(&provider_called),
+            }),
+            ModelOptions::default(),
+            &registry,
+        )?;
+
+        assert_eq!(session_config.agent_name, "Neko");
+        assert!(session_config.middlewares.is_empty());
+        assert!(!provider_called.load(Ordering::SeqCst));
+        Ok(())
+    }
+
+    #[test]
+    fn middlewares_from_config_skips_unknown_names() -> anyhow::Result<()> {
+        let registry = MiddlewareRegistry::new();
+        let config: crate::config::MiddlewareConfig = serde_json::from_value(json!({
+            "name": "memory",
+            "path": "./memory.db"
+        }))?;
+
+        let middlewares = middlewares_from_config(&[config], &registry)?;
+
+        assert!(middlewares.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn middlewares_from_config_uses_registered_factory() -> anyhow::Result<()> {
+        let captured_config = Arc::new(Mutex::new(None));
+        let mut registry = MiddlewareRegistry::new();
+        let captured_config_for_factory = Arc::clone(&captured_config);
+        registry.register("memory", move |config| {
+            *captured_config_for_factory.lock().unwrap() = Some(config.clone());
+            Ok(Arc::new(ShortCircuitMiddleware) as Arc<dyn Middleware>)
+        })?;
+        let config: crate::config::MiddlewareConfig = serde_json::from_value(json!({
+            "name": "memory",
+            "path": "./memory.db"
+        }))?;
+
+        let middlewares = middlewares_from_config(&[config.clone()], &registry)?;
+
+        assert_eq!(middlewares.len(), 1);
+        assert_eq!(*captured_config.lock().unwrap(), Some(config));
+        Ok(())
+    }
+
+    #[test]
+    fn agent_session_config_returns_factory_errors() {
+        let mut registry = MiddlewareRegistry::new();
+        registry
+            .register("broken", |_config| anyhow::bail!("factory failed"))
+            .unwrap();
+        let agent_config = crate::config::AgentConfig {
+            name: "Neko".to_owned(),
+            provider: "deepseek".to_owned(),
+            model: "deepseek-v4-pro".to_owned(),
+            middlewares: vec![serde_json::from_value(json!({ "name": "broken" })).unwrap()],
+        };
+
+        let result = AgentSessionConfig::from_agent_config(
+            &agent_config,
+            Arc::new(StaticProvider {
+                called: Arc::new(AtomicBool::new(false)),
+            }),
+            ModelOptions::default(),
+            &registry,
+        );
+
+        let error = match result {
+            Ok(_) => panic!("factory error should fail agent session config creation"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("failed to create middleware broken"));
+    }
+
+    #[test]
+    fn middleware_registry_rejects_duplicate_names() {
+        let mut registry = MiddlewareRegistry::new();
+        registry
+            .register("memory", |_config| {
+                Ok(Arc::new(ShortCircuitMiddleware) as Arc<dyn Middleware>)
+            })
+            .unwrap();
+
+        let result = registry.register("memory", |_config| {
+            Ok(Arc::new(ShortCircuitMiddleware) as Arc<dyn Middleware>)
+        });
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

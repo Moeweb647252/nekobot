@@ -339,19 +339,28 @@ mod tests {
         agent_name: &str,
     ) -> (ChannelRuntime, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
+        let agent_config = crate::config::AgentConfig {
+            name: agent_name.to_owned(),
+            provider: "test-provider".to_owned(),
+            model: "test-model".to_owned(),
+            middlewares: Vec::new(),
+        };
+        let middleware_registry = crate::agent::MiddlewareRegistry::new();
+        let agent_session_config = AgentSessionConfig::from_agent_config(
+            &agent_config,
+            Arc::new(EchoProvider {
+                calls: Arc::clone(&calls),
+            }),
+            ModelOptions::default(),
+            &middleware_registry,
+        )
+        .unwrap();
         let runtime = ChannelRuntime::new(
             Box::new(channel),
             ChannelContext {
                 app_db: conn.clone(),
             },
-            AgentSessionConfig::new(
-                agent_name,
-                Arc::new(EchoProvider {
-                    calls: Arc::clone(&calls),
-                }),
-                ModelOptions::default(),
-                Vec::new(),
-            ),
+            agent_session_config,
         );
 
         (runtime, calls)
