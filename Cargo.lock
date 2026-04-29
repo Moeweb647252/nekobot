@@ -1531,6 +1531,7 @@ name = "nekobot"
 version = "0.1.0"
 dependencies = [
  "nekobot-core",
+ "nekobot-provider",
  "serde_json",
  "tokio",
 ]

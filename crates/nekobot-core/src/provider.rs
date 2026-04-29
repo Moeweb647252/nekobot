@@ -1,10 +1,14 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc::Sender;
 
 use crate::agent::types::{ChatRequest, ChatResponse, Usage};
+use crate::config::ProviderConfig;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProviderRequest {
@@ -85,6 +89,47 @@ pub trait Provider: Send + Sync {
         _events: Sender<ProviderEvent>,
     ) -> Result<ChatResponse, ProviderError> {
         Err(ProviderError::UnsupportedFeature("stream".to_owned()))
+    }
+}
+
+pub type ProviderCreateFn =
+    Arc<dyn Fn(&ProviderConfig) -> anyhow::Result<Arc<dyn Provider>> + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct ProviderRegistry {
+    factories: HashMap<String, ProviderCreateFn>,
+}
+
+impl ProviderRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register<F>(&mut self, name: impl Into<String>, create: F) -> anyhow::Result<()>
+    where
+        F: Fn(&ProviderConfig) -> anyhow::Result<Arc<dyn Provider>> + Send + Sync + 'static,
+    {
+        let name = name.into();
+        if name.trim().is_empty() {
+            anyhow::bail!("provider factory name cannot be empty");
+        }
+
+        if self.factories.contains_key(&name) {
+            anyhow::bail!("duplicate provider factory: {name}");
+        }
+
+        self.factories.insert(name, Arc::new(create));
+        Ok(())
+    }
+
+    pub fn create(&self, config: &ProviderConfig) -> anyhow::Result<Option<Arc<dyn Provider>>> {
+        let Some(factory) = self.factories.get(config.name()) else {
+            return Ok(None);
+        };
+
+        factory(config)
+            .with_context(|| format!("failed to create provider {}", config.name()))
+            .map(Some)
     }
 }
 

@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 tokio = { workspace = true, features = ["full"] }
 nekobot-core = { workspace = true }
+nekobot-provider = { workspace = true }
 serde_json.workspace = true
