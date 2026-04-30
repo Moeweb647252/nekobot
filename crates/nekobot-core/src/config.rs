@@ -19,6 +19,13 @@ pub struct Config {
     /// When set, C2C users must `/login <password>` before accessing any agent.
     #[serde(default)]
     pub password_hash: Option<String>,
+    /// Path to the libSQL database file. Defaults to `"nekobot.db"`.
+    #[serde(default = "default_database_path")]
+    pub database_path: String,
+}
+
+fn default_database_path() -> String {
+    "nekobot.db".to_owned()
 }
 
 impl Config {

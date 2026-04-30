@@ -152,7 +152,9 @@ impl<S> NekoBot<S> {
 
         self.config.validate()?;
 
-        let db = turso::Builder::new_local("nekobot.db").build().await?;
+        let db = turso::Builder::new_local(&self.config.database_path)
+            .build()
+            .await?;
         let conn = db.connect()?;
         crate::entity::enable_foreign_keys(&conn).await?;
         Session::create_table(&conn).await?;
@@ -236,18 +238,29 @@ impl<S> NekoBot<S> {
 
     /// Validate config, initialize the database, wire up channel runtimes
     /// for every channel×agent combination, and run them concurrently.
+    ///
+    /// Awaits all runtimes; returns early on first error or on SIGINT (Ctrl+C).
     pub async fn run(&mut self) -> Result<(), anyhow::Error> {
         use crate::runtime::Runtime;
 
         let runtimes = self.init().await?;
-        let mut tasks = Vec::new();
-        for mut rt in runtimes {
-            tasks.push(tokio::spawn(async move { rt.run().await }));
+        let handles: Vec<_> = runtimes
+            .into_iter()
+            .map(|mut rt| tokio::spawn(async move { rt.run().await }))
+            .collect();
+
+        tokio::select! {
+            result = async {
+                for h in handles {
+                    h.await??;
+                }
+                Ok::<_, anyhow::Error>(())
+            } => result,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT, shutting down");
+                Ok(())
+            },
         }
-        for task in tasks {
-            task.await??;
-        }
-        Ok(())
     }
 }
 
@@ -273,6 +286,7 @@ mod tests {
             providers: Vec::new(),
             agents: Vec::new(),
             password_hash: None,
+            database_path: ":memory:".into(),
         })
         .with_middleware("test", |_config| {
             Ok(Arc::new(TestMiddleware) as Arc<dyn agent::middleware::Middleware>)

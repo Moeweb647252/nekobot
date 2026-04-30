@@ -109,12 +109,15 @@ impl ChannelRuntime {
                 sender,
                 content,
             } => {
-                // C2C gate interception — login / connect before agent
-                let agent_name_override = if let Some(gate) = &self.gate {
-                    match gate
-                        .intercept(channel_info.id.as_str(), sender.id.as_str(), &content)
-                        .await?
-                    {
+                // C2C gate interception — login / connect before agent.
+                // Only applies to C2C private chats (chat id prefixed with "c2c:").
+                let is_c2c = chat.id.as_str().starts_with("c2c:");
+                let agent_name_override = if is_c2c {
+                    if let Some(gate) = &self.gate {
+                        match gate
+                            .intercept(channel_info.id.as_str(), sender.id.as_str(), &content)
+                            .await?
+                        {
                         InterceptResult::Reject { reply } => {
                             self.channel
                                 .send(Request::SendMessage {
@@ -128,14 +131,17 @@ impl ChannelRuntime {
                     }
                 } else {
                     None
-                };
+                }
+            } else {
+                None
+            };
 
-                let handle = self
-                    .ensure_agent_session(
-                        channel_info,
-                        &chat,
-                        output_sender,
-                        agent_name_override,
+            let handle = self
+                .ensure_agent_session(
+                    channel_info,
+                    &chat,
+                    output_sender,
+                    agent_name_override,
                     )
                     .await?;
 

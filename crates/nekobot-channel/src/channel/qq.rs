@@ -132,6 +132,33 @@ impl QQChannel {
 
         Ok(resp.url)
     }
+
+    /// Clear the cached token so the next `get_token` call re-fetches.
+    async fn clear_token(&self) {
+        self.state.lock().await.token = None;
+    }
+
+    /// Send a request with the given token (used for retry after token refresh).
+    async fn send_with_token(&self, token: &str, request: &Request) -> anyhow::Result<()> {
+        match request {
+            Request::SendMessage { target, content } => {
+                if let Some(openid) = parse_c2c_target(target) {
+                    send_c2c_message(&self.http, token, openid, content).await?;
+                } else if let Some(group_openid) = parse_group_target(target) {
+                    send_group_message(&self.http, token, group_openid, content).await?;
+                } else {
+                    anyhow::bail!("unknown QQ target format: {target}");
+                }
+            }
+            Request::StartTyping { target } => {
+                if let Some(openid) = parse_c2c_target(target) {
+                    let _ = send_c2c_input_notify(&self.http, token, openid).await;
+                }
+            }
+            Request::StopTyping { .. } => {}
+        }
+        Ok(())
+    }
 }
 
 // ── API response models ──
@@ -269,50 +296,118 @@ impl Channel for QQChannel {
     /// `StopTyping` is a no-op (QQ has no stop-typing API).
     async fn send(&self, request: Request) -> anyhow::Result<()> {
         let token = self.get_token().await?;
-
-        match request {
-            Request::SendMessage { target, content } => {
-                if let Some(openid) = parse_c2c_target(&target) {
-                    send_c2c_message(&self.http, &token, openid, &content).await?;
-                } else if let Some(group_openid) = parse_group_target(&target) {
-                    send_group_message(&self.http, &token, group_openid, &content).await?;
-                } else {
-                    anyhow::bail!("unknown QQ target format: {target}");
-                }
-            }
-            Request::StartTyping { target } => {
-                if let Some(openid) = parse_c2c_target(&target) {
-                    let _ = send_c2c_input_notify(&self.http, &token, openid).await;
-                }
-            }
-            Request::StopTyping { .. } => {
-                // QQ has no explicit stop-typing API
+        if let Err(e) = self.send_with_token(&token, &request).await {
+            if e.to_string().contains("QQBOT_TOKEN_EXPIRED") {
+                tracing::info!(target: "qqbot", "token expired, refreshing and retrying");
+                self.clear_token().await;
+                let new_token = self.get_token().await?;
+                self.send_with_token(&new_token, &request).await?;
+            } else {
+                return Err(e);
             }
         }
-
         Ok(())
     }
 }
 
 // ── Gateway event loop ──
 
-/// WebSocket event loop driving the QQ Bot gateway connection.
+/// Fetch a new access token via HTTP.
+async fn fetch_token(http: &Client, app_id: &str, client_secret: &str) -> anyhow::Result<String> {
+    let resp: TokenResponse = http
+        .post(TOKEN_URL)
+        .json(&serde_json::json!({
+            "appId": app_id,
+            "clientSecret": client_secret,
+        }))
+        .send()
+        .await
+        .context("failed to fetch access token")?
+        .json()
+        .await
+        .context("failed to parse access token response")?;
+    Ok(resp.access_token)
+}
+
+/// Fetch the WebSocket gateway URL.
+async fn fetch_gateway_url(http: &Client, token: &str) -> anyhow::Result<String> {
+    let resp: GatewayResponse = http
+        .get(format!("{API_BASE}{GATEWAY_PATH}"))
+        .header("Authorization", format!("QQBot {token}"))
+        .send()
+        .await
+        .context("failed to get gateway url")?
+        .json()
+        .await
+        .context("failed to parse gateway response")?;
+    Ok(resp.url)
+}
+
+/// WebSocket event loop with automatic reconnection.
 ///
-/// 1. Connect to the gateway URL.
-/// 2. Wait for Hello (op=10), then send Identify (op=2).
-/// 3. Enter a select loop:
-///    - Incoming messages are dispatched via `dispatch_event`.
-///    - A heartbeat timer sends op=1 ping frames.
-///
-/// Exits when the WebSocket closes, errors, or heartbeat send fails.
+/// On disconnect or error, waits with exponential backoff (1s → 2s → 5s → ... → 60s max),
+/// re-fetches a fresh token and gateway URL, then reconnects.
 async fn run_gateway_loop(
-    _http: &Client,
-    _app_id: &str,
-    _client_secret: &str,
+    http: &Client,
+    app_id: &str,
+    client_secret: &str,
     gateway_url: &str,
     token: &str,
     _state: Arc<Mutex<ChannelState>>,
     event_tx: mpsc::Sender<Event>,
+) -> anyhow::Result<()> {
+    let mut current_token = token.to_owned();
+    let mut current_gateway_url = gateway_url.to_owned();
+    let mut attempt: u32 = 0;
+
+    loop {
+        match run_gateway_session(
+            http,
+            &current_gateway_url,
+            &current_token,
+            &event_tx,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                tracing::error!(target: "qqbot", "gateway session ended ({attempt}): {e}");
+            }
+        }
+
+        // Exponential backoff: 1s, 2s, 5s, 10s, 20s, 40s, 60s (capped)
+        let delay_secs = (1u64 << attempt.min(6)).min(60);
+        tracing::info!(target: "qqbot", "reconnecting in {delay_secs}s (attempt {attempt})...");
+        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+
+        // Refresh token and gateway URL before reconnecting
+        match fetch_token(http, app_id, client_secret).await {
+            Ok(t) => current_token = t,
+            Err(e) => {
+                tracing::error!(target: "qqbot", "failed to refresh token: {e}");
+                attempt += 1;
+                continue;
+            }
+        }
+        match fetch_gateway_url(http, &current_token).await {
+            Ok(url) => current_gateway_url = url,
+            Err(e) => {
+                tracing::error!(target: "qqbot", "failed to refresh gateway url: {e}");
+                attempt += 1;
+                continue;
+            }
+        }
+
+        attempt += 1;
+    }
+}
+
+/// Single gateway session — returns when the connection drops.
+async fn run_gateway_session(
+    _http: &Client,
+    gateway_url: &str,
+    token: &str,
+    event_tx: &mpsc::Sender<Event>,
 ) -> anyhow::Result<()> {
     let (ws, _resp) = tokio_tungstenite::connect_async(gateway_url)
         .await
@@ -321,11 +416,10 @@ async fn run_gateway_loop(
     use std::pin::pin;
     let mut ws = pin!(ws);
     let current_token = token.to_owned();
-    let mut heartbeat_interval = Duration::from_secs(41); // default, overwritten by Hello
+    let mut heartbeat_interval = Duration::from_secs(41);
 
     loop {
         tokio::select! {
-            // WebSocket message branch
             msg = ws.next() => {
                 let msg = match msg {
                     Some(Ok(msg)) => msg,
@@ -344,8 +438,6 @@ async fn run_gateway_loop(
 
                         match payload.op {
                             10 => {
-                                // Hello — server handshake complete. Update heartbeat
-                                // interval and reply with Identify.
                                 if let Some(interval) = payload.d["heartbeat_interval"].as_u64() {
                                     heartbeat_interval = Duration::from_millis(interval);
                                 }
@@ -360,13 +452,12 @@ async fn run_gateway_loop(
                                 ws.send(Message::Text(identify.to_string().into())).await?;
                             }
                             0 => {
-                                // Dispatch — server-pushed business event
                                 let t = payload.t.as_deref().unwrap_or("");
-                                if let Err(e) = dispatch_event(t, payload.d, &event_tx).await {
+                                if let Err(e) = dispatch_event(t, payload.d, event_tx).await {
                                     tracing::error!(target: "qqbot", "dispatch error: {e}");
                                 }
                             }
-                            11 => {} // Heartbeat ACK — no action needed
+                            11 => {}
                             _ => {}
                         }
                     }
@@ -377,7 +468,6 @@ async fn run_gateway_loop(
                     _ => {}
                 }
             }
-            // Heartbeat timer branch
             _ = tokio::time::sleep(heartbeat_interval) => {
                 let heartbeat = serde_json::json!({ "op": 1, "d": null });
                 if ws.send(Message::Text(heartbeat.to_string().into())).await.is_err() {
@@ -461,7 +551,8 @@ async fn send_c2c_message(
     openid: &str,
     content: &str,
 ) -> anyhow::Result<()> {
-    http.post(format!("{API_BASE}/v2/users/{openid}/messages"))
+    let resp = http
+        .post(format!("{API_BASE}/v2/users/{openid}/messages"))
         .header("Authorization", format!("QQBot {token}"))
         .json(&serde_json::json!({
             "content": content,
@@ -471,6 +562,10 @@ async fn send_c2c_message(
         .send()
         .await
         .context("failed to send C2C message")?;
+
+    if resp.status().as_u16() == 401 {
+        anyhow::bail!("QQBOT_TOKEN_EXPIRED");
+    }
     Ok(())
 }
 
@@ -483,7 +578,8 @@ async fn send_group_message(
     group_openid: &str,
     content: &str,
 ) -> anyhow::Result<()> {
-    http.post(format!("{API_BASE}/v2/groups/{group_openid}/messages"))
+    let resp = http
+        .post(format!("{API_BASE}/v2/groups/{group_openid}/messages"))
         .header("Authorization", format!("QQBot {token}"))
         .json(&serde_json::json!({
             "content": content,
@@ -493,6 +589,10 @@ async fn send_group_message(
         .send()
         .await
         .context("failed to send group message")?;
+
+    if resp.status().as_u16() == 401 {
+        anyhow::bail!("QQBOT_TOKEN_EXPIRED");
+    }
     Ok(())
 }
 
