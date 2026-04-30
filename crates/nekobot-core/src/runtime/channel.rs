@@ -22,6 +22,8 @@ use crate::{
     },
 };
 
+use super::session_gate::{InterceptResult, SessionGate};
+
 type ChannelAgentKey = (
     ChannelId,
     ChatId,
@@ -41,6 +43,7 @@ pub struct ChannelRuntime {
     context: ChannelContext,
     agent_configs: Vec<AgentSessionConfig>,
     route: AgentRoute,
+    gate: Option<Arc<SessionGate>>,
     sessions: HashMap<ChannelAgentKey, AgentSessionHandle>,
     session_targets: HashMap<SessionId, ReplyTarget>,
 }
@@ -70,6 +73,7 @@ impl ChannelRuntime {
             context,
             agent_configs,
             route,
+            gate: None,
             sessions: HashMap::new(),
             session_targets: HashMap::new(),
         }
@@ -78,6 +82,12 @@ impl ChannelRuntime {
     /// Override the agent routing function.
     pub fn with_route(mut self, route: AgentRoute) -> Self {
         self.route = route;
+        self
+    }
+
+    /// Attach a [`SessionGate`] for C2C access control.
+    pub fn with_gate(mut self, gate: Arc<SessionGate>) -> Self {
+        self.gate = Some(gate);
         self
     }
 
@@ -99,8 +109,34 @@ impl ChannelRuntime {
                 sender,
                 content,
             } => {
+                // C2C gate interception — login / connect before agent
+                let agent_name_override = if let Some(gate) = &self.gate {
+                    match gate
+                        .intercept(channel_info.id.as_str(), sender.id.as_str(), &content)
+                        .await?
+                    {
+                        InterceptResult::Reject { reply } => {
+                            self.channel
+                                .send(Request::SendMessage {
+                                    target: chat.reply_target.clone(),
+                                    content: reply,
+                                })
+                                .await?;
+                            return Ok(());
+                        }
+                        InterceptResult::Pass { agent_name } => Some(agent_name),
+                    }
+                } else {
+                    None
+                };
+
                 let handle = self
-                    .ensure_agent_session(channel_info, &chat, output_sender)
+                    .ensure_agent_session(
+                        channel_info,
+                        &chat,
+                        output_sender,
+                        agent_name_override,
+                    )
                     .await?;
 
                 handle
@@ -122,8 +158,10 @@ impl ChannelRuntime {
         channel_info: &ChannelInfo,
         chat: &ChatInfo,
         output_sender: Sender<AgentOutput>,
+        agent_name_override: Option<String>,
     ) -> anyhow::Result<AgentSessionHandle> {
-        let agent_name_str = (self.route)(&channel_info.id, &chat.id);
+        let agent_name_str = agent_name_override
+            .unwrap_or_else(|| (self.route)(&channel_info.id, &chat.id));
         let config = self
             .agent_configs
             .iter()
@@ -555,10 +593,10 @@ mod tests {
 
         neko_runtime.prepare_tables().await?;
         neko_runtime
-            .ensure_agent_session(&channel_info, &chat, output_sender.clone())
+            .ensure_agent_session(&channel_info, &chat, output_sender.clone(), None)
             .await?;
         mimi_runtime
-            .ensure_agent_session(&channel_info, &chat, output_sender)
+            .ensure_agent_session(&channel_info, &chat, output_sender, None)
             .await?;
 
         let neko_mapping = ChannelChatAgent::get_by_channel_chat_agent(

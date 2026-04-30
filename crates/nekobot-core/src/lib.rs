@@ -141,9 +141,13 @@ impl<S> NekoBot<S> {
                 Entity,
                 channel_chat_agent::ChannelChatAgent,
                 message::Message,
+                sender_gate_state::SenderGateState,
                 session::Session,
             },
-            runtime::channel::{ChannelContext, ChannelRuntime},
+            runtime::{
+                channel::{ChannelContext, ChannelRuntime},
+                session_gate::SessionGate,
+            },
         };
 
         self.config.validate()?;
@@ -154,6 +158,7 @@ impl<S> NekoBot<S> {
         Session::create_table(&conn).await?;
         Message::create_table(&conn).await?;
         ChannelChatAgent::create_table(&conn).await?;
+        SenderGateState::create_table(&conn).await?;
 
         let providers: HashMap<_, _> = self
             .config
@@ -194,16 +199,37 @@ impl<S> NekoBot<S> {
             })
             .collect::<Result<_, anyhow::Error>>()?;
 
+        let gate: Option<Arc<SessionGate>> =
+            self.config.password_hash.as_ref().map(|hash| {
+                let valid_agents: Vec<String> =
+                    self.config.agents.iter().map(|a| a.name.clone()).collect();
+                Arc::new(SessionGate::new(hash.clone(), valid_agents, conn.clone()))
+            });
+
         Ok(channels
             .into_iter()
             .map(|ch| {
-                ChannelRuntime::new(
+                let mut rt = ChannelRuntime::new(
                     ch,
                     ChannelContext {
                         app_db: conn.clone(),
                     },
                     agent_configs.clone(),
-                )
+                );
+                if let Some(ref g) = gate {
+                    // Each channel needs its own gate with the correct channel_id.
+                    // Since we don't have the ChannelInfo yet (register hasn't been called),
+                    // we use a gate keyed by channel_id provided at construction time.
+                    // The gate's channel_id matches the config's channel app_id.
+                    // Actually we need the ChannelInfo.id from register() which happens
+                    // inside rt.run(). So we can't set it here.
+                    //
+                    // For now: SessionGate::channel_id is set by the gate constructor
+                    // with the actual channel id. We'll need to defer gate creation
+                    // to inside ChannelRuntime::run() after register() returns ChannelInfo.
+                    rt = rt.with_gate(Arc::clone(g));
+                }
+                rt
             })
             .collect())
     }
@@ -246,6 +272,7 @@ mod tests {
             channels: Vec::new(),
             providers: Vec::new(),
             agents: Vec::new(),
+            password_hash: None,
         })
         .with_middleware("test", |_config| {
             Ok(Arc::new(TestMiddleware) as Arc<dyn agent::middleware::Middleware>)

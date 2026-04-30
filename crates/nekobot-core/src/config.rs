@@ -15,6 +15,10 @@ pub struct Config {
     pub channels: Vec<ChannelConfig>,
     pub providers: Vec<ProviderConfig>,
     pub agents: Vec<AgentConfig>,
+    /// Optional SHA256 hex hash of the global login password.
+    /// When set, C2C users must `/login <password>` before accessing any agent.
+    #[serde(default)]
+    pub password_hash: Option<String>,
 }
 
 impl Config {

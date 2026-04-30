@@ -7,6 +7,7 @@ use turso::Connection;
 
 pub mod channel_chat_agent;
 pub mod message;
+pub mod sender_gate_state;
 pub mod session;
 
 pub(crate) async fn enable_foreign_keys(conn: &Connection) -> anyhow::Result<()> {

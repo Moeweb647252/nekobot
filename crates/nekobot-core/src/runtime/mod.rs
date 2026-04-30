@@ -1,6 +1,7 @@
 //! Runtime abstraction — drives the main event loop for a channel+agent pair.
 
 pub mod channel;
+pub mod session_gate;
 pub mod shell;
 
 /// A long-running task that processes events for a channel+agent combination.
