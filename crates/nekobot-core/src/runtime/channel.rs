@@ -2,8 +2,9 @@
 //! and outgoing replies.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use nekobot_channel::{Channel, ChannelInfo, ChatInfo, Event, ReplyTarget, Request};
+use nekobot_channel::{Channel, ChannelInfo, ChannelId, ChatInfo, ChatId, Event, ReplyTarget, Request};
 use tokio::sync::mpsc::Sender;
 use turso::Connection;
 
@@ -22,17 +23,24 @@ use crate::{
 };
 
 type ChannelAgentKey = (
-    nekobot_channel::ChannelId,
-    nekobot_channel::ChatId,
+    ChannelId,
+    ChatId,
     AgentName,
 );
 
-/// Runtime that ties a [`Channel`] adapter to an [`AgentSession`], managing per-chat session
-/// lifecycle and routing messages between the channel and the agent.
+/// Decides which agent handles a given chat.
+///
+/// Receives `(channel_id, chat_id)` and returns the agent name. The default
+/// route returns the first configured agent for every chat.
+pub type AgentRoute = Arc<dyn Fn(&ChannelId, &ChatId) -> String + Send + Sync>;
+
+/// Runtime that ties a [`Channel`] adapter to one or more agent sessions,
+/// routing each chat to an agent via [`AgentRoute`].
 pub struct ChannelRuntime {
     channel: Box<dyn Channel>,
     context: ChannelContext,
-    agent_config: AgentSessionConfig,
+    agent_configs: Vec<AgentSessionConfig>,
+    route: AgentRoute,
     sessions: HashMap<ChannelAgentKey, AgentSessionHandle>,
     session_targets: HashMap<SessionId, ReplyTarget>,
 }
@@ -43,19 +51,34 @@ pub struct ChannelContext {
 }
 
 impl ChannelRuntime {
-    /// Create a new [`ChannelRuntime`] for the given channel, context, and agent config.
+    /// Create a new [`ChannelRuntime`] for the given channel, context, and agent configs.
+    ///
+    /// The default [`AgentRoute`] always picks the first agent in `agent_configs`.
+    /// Use [`with_route`](ChannelRuntime::with_route) to customize.
     pub fn new(
         channel: Box<dyn Channel>,
         context: ChannelContext,
-        agent_config: AgentSessionConfig,
+        agent_configs: Vec<AgentSessionConfig>,
     ) -> Self {
+        let first = agent_configs
+            .first()
+            .map(|c| c.agent_name.clone())
+            .unwrap_or_default();
+        let route: AgentRoute = Arc::new(move |_, _| first.clone());
         Self {
             channel,
             context,
-            agent_config,
+            agent_configs,
+            route,
             sessions: HashMap::new(),
             session_targets: HashMap::new(),
         }
+    }
+
+    /// Override the agent routing function.
+    pub fn with_route(mut self, route: AgentRoute) -> Self {
+        self.route = route;
+        self
     }
 
     async fn prepare_tables(&self) -> anyhow::Result<()> {
@@ -100,7 +123,16 @@ impl ChannelRuntime {
         chat: &ChatInfo,
         output_sender: Sender<AgentOutput>,
     ) -> anyhow::Result<AgentSessionHandle> {
-        let agent_name = AgentName::from(self.agent_config.agent_name.clone());
+        let agent_name_str = (self.route)(&channel_info.id, &chat.id);
+        let config = self
+            .agent_configs
+            .iter()
+            .find(|c| c.agent_name == agent_name_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!("no agent config found for agent '{agent_name_str}'")
+            })?;
+
+        let agent_name = AgentName::from(agent_name_str);
         let mapping = match ChannelChatAgent::get_by_channel_chat_agent(
             &self.context.app_db,
             &channel_info.id,
@@ -128,7 +160,8 @@ impl ChannelRuntime {
                 }
             }
             None => {
-                let session = Session::create(&self.context.app_db, agent_name.as_str()).await?;
+                let session =
+                    Session::create(&self.context.app_db, agent_name.as_str()).await?;
                 ChannelChatAgent::create(
                     &self.context.app_db,
                     NewChannelChatAgent {
@@ -159,7 +192,7 @@ impl ChannelRuntime {
         }
 
         let agent_session =
-            AgentSession::new(mapping.session_id.as_i64(), self.agent_config.clone());
+            AgentSession::new(mapping.session_id.as_i64(), config.clone());
         let handle = agent_session
             .start(self.context.app_db.clone(), output_sender)
             .await?;
@@ -368,7 +401,7 @@ mod tests {
             ChannelContext {
                 app_db: conn.clone(),
             },
-            agent_session_config,
+            vec![agent_session_config],
         );
 
         (runtime, calls)
