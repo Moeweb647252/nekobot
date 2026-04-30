@@ -20,7 +20,8 @@ async fn main() {
     let config_content = tokio::fs::read_to_string("config.yaml")
         .await
         .expect("Failed to read config.yaml");
-    let config = serde_json::from_str(&config_content).expect("Failed to parse config.yaml");
+    let config: nekobot_core::config::Config =
+        serde_yml::from_str(&config_content).expect("Failed to parse config.yaml");
 
     // Build NekoBot with the config
     let mut bot = nekobot_core::NekoBot::new(config);
@@ -32,6 +33,7 @@ async fn main() {
             nekobot_core::config::ChannelConfig::QQ {
                 app_id,
                 client_secret,
+                ..
             } => Ok(Box::new(nekobot_channel::channel::QQChannel::new(
                 app_id.clone(),
                 client_secret.clone(),

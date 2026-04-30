@@ -1,1 +1,4 @@
 /target
+config.yaml
+nekobot.db
+nekobot.db-wal

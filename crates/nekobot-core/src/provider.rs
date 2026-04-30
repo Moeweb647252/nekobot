@@ -155,11 +155,11 @@ impl ProviderRegistry {
         Ok(())
     }
 
-    /// Create a provider from its config, looking up the factory by name.
+    /// Create a provider from its config, looking up the factory by type name.
     ///
     /// Returns `Ok(None)` if no factory is registered for the config's type.
     pub fn create(&self, config: &ProviderConfig) -> anyhow::Result<Option<Arc<dyn Provider>>> {
-        let Some(factory) = self.factories.get(config.name()) else {
+        let Some(factory) = self.factories.get(config.type_name()) else {
             return Ok(None);
         };
 

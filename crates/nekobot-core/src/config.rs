@@ -212,7 +212,17 @@ pub enum ProviderConfig {
 }
 
 impl ProviderConfig {
-    /// Returns the provider's configured name.
+    /// Returns the provider type tag as it appears in the YAML `type` field
+    /// (e.g. `"DeepSeek"`, `"OpenAICodex"`). Used for registry look-up.
+    pub fn type_name(&self) -> &str {
+        match self {
+            ProviderConfig::OpenAI { .. } => "OpenAI",
+            ProviderConfig::OpenAICodex { .. } => "OpenAICodex",
+            ProviderConfig::DeepSeek { .. } => "DeepSeek",
+        }
+    }
+
+    /// Returns the user-defined provider name used in agent config `provider` references.
     pub fn name(&self) -> &str {
         match self {
             ProviderConfig::OpenAI { name, .. }

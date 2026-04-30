@@ -91,7 +91,7 @@ impl QQChannel {
             }
         }
 
-        let resp: TokenResponse = self
+        let response = self
             .http
             .post(TOKEN_URL)
             .json(&serde_json::json!({
@@ -100,13 +100,22 @@ impl QQChannel {
             }))
             .send()
             .await
-            .context("failed to fetch access token")?
-            .json()
+            .context("failed to fetch access token")?;
+
+        let status = response.status();
+        let body = response
+            .text()
             .await
-            .context("failed to parse access token response")?;
+            .context("failed to read token response body")?;
+
+        let resp: TokenResponse = serde_json::from_str(&body).with_context(|| {
+            format!(
+                "failed to parse access token response (status={status}): {body}"
+            )
+        })?;
 
         let token = resp.access_token.clone();
-        let expires_in = resp.expires_in.unwrap_or(7200).max(60) as u64;
+        let expires_in = resp.expires_in.unwrap_or(7200).max(60);
         state.token = Some(CachedToken {
             value: token.clone(),
             expires_at: Instant::now() + Duration::from_secs(expires_in),
@@ -119,16 +128,22 @@ impl QQChannel {
     ///
     /// Exchange the access token for an actual WSS URL.
     async fn get_gateway_url(&self, token: &str) -> anyhow::Result<String> {
-        let resp: GatewayResponse = self
+        let response = self
             .http
             .get(format!("{API_BASE}{GATEWAY_PATH}"))
             .header("Authorization", format!("QQBot {token}"))
             .send()
             .await
-            .context("failed to get gateway url")?
-            .json()
+            .context("failed to get gateway url")?;
+
+        let status = response.status();
+        let body = response
+            .text()
             .await
-            .context("failed to parse gateway response")?;
+            .context("failed to read gateway response body")?;
+
+        let resp: GatewayResponse = serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse gateway response (status={status}): {body}"))?;
 
         Ok(resp.url)
     }
@@ -167,7 +182,30 @@ impl QQChannel {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
-    expires_in: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_expires_in")]
+    expires_in: Option<u64>,
+}
+
+fn deserialize_expires_in<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    use serde_json::Value;
+
+    let v = Value::deserialize(deserializer)?;
+    match v {
+        Value::Number(n) => n
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| de::Error::custom("invalid number for expires_in")),
+        Value::String(s) => s
+            .parse()
+            .map(Some)
+            .map_err(|_| de::Error::custom("invalid string for expires_in")),
+        Value::Null => Ok(None),
+        _ => Err(de::Error::custom("expected number or string for expires_in")),
+    }
 }
 
 /// Response from `GET /gateway`
@@ -331,15 +369,22 @@ async fn fetch_token(http: &Client, app_id: &str, client_secret: &str) -> anyhow
 
 /// Fetch the WebSocket gateway URL.
 async fn fetch_gateway_url(http: &Client, token: &str) -> anyhow::Result<String> {
-    let resp: GatewayResponse = http
+    let response = http
         .get(format!("{API_BASE}{GATEWAY_PATH}"))
         .header("Authorization", format!("QQBot {token}"))
         .send()
         .await
-        .context("failed to get gateway url")?
-        .json()
+        .context("failed to get gateway url")?;
+
+    let status = response.status();
+    let body = response
+        .text()
         .await
-        .context("failed to parse gateway response")?;
+        .context("failed to read gateway response body")?;
+
+    let resp: GatewayResponse = serde_json::from_str(&body)
+        .with_context(|| format!("failed to parse gateway response (status={status}): {body}"))?;
+
     Ok(resp.url)
 }
 
@@ -361,6 +406,10 @@ async fn run_gateway_loop(
     let mut attempt: u32 = 0;
 
     loop {
+        tracing::info!(
+            target: "qqbot",
+            "connecting to gateway (attempt {attempt}): {current_gateway_url}"
+        );
         match run_gateway_session(
             http,
             &current_gateway_url,
@@ -371,7 +420,7 @@ async fn run_gateway_loop(
         {
             Ok(()) => return Ok(()),
             Err(e) => {
-                tracing::error!(target: "qqbot", "gateway session ended ({attempt}): {e}");
+                tracing::error!(target: "qqbot", "gateway session ended ({attempt}): {e:#}");
             }
         }
 
@@ -411,7 +460,7 @@ async fn run_gateway_session(
 ) -> anyhow::Result<()> {
     let (ws, _resp) = tokio_tungstenite::connect_async(gateway_url)
         .await
-        .context("failed to connect to QQ gateway")?;
+        .with_context(|| format!("failed to connect to QQ gateway: {gateway_url}"))?;
 
     use std::pin::pin;
     let mut ws = pin!(ws);
