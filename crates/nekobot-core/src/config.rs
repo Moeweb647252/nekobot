@@ -162,6 +162,15 @@ pub enum ChannelConfig {
     },
 }
 
+impl ChannelConfig {
+    /// Returns the channel type tag as it appears in the JSON `"type"` field.
+    pub fn name(&self) -> &str {
+        match self {
+            ChannelConfig::QQ { .. } => "QQ",
+        }
+    }
+}
+
 /// Supported LLM provider configurations, each with a name, credentials, and
 /// a list of available models.
 #[derive(Debug, Clone, Serialize, Deserialize)]

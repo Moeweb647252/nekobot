@@ -249,7 +249,7 @@ impl Channel for QQChannel {
 
         tokio::spawn(async move {
             if let Err(e) = run_gateway_loop(&http, &app_id, &client_secret, &gateway_url, &token, state, event_tx_ws).await {
-                eprintln!("[QQChannel] gateway loop exited: {e}");
+                tracing::error!(target: "qqbot", "gateway loop exited: {e}");
             }
         });
 
@@ -330,7 +330,7 @@ async fn run_gateway_loop(
                 let msg = match msg {
                     Some(Ok(msg)) => msg,
                     Some(Err(e)) => {
-                        eprintln!("[QQChannel] ws error: {e}");
+                        tracing::error!(target: "qqbot", "ws error: {e}");
                         break;
                     }
                     None => break,
@@ -363,7 +363,7 @@ async fn run_gateway_loop(
                                 // Dispatch — server-pushed business event
                                 let t = payload.t.as_deref().unwrap_or("");
                                 if let Err(e) = dispatch_event(t, payload.d, &event_tx).await {
-                                    eprintln!("[QQChannel] dispatch error: {e}");
+                                    tracing::error!(target: "qqbot", "dispatch error: {e}");
                                 }
                             }
                             11 => {} // Heartbeat ACK — no action needed

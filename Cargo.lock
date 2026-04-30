@@ -1555,10 +1555,13 @@ dependencies = [
 name = "nekobot"
 version = "0.1.0"
 dependencies = [
+ "nekobot-channel",
  "nekobot-core",
  "nekobot-provider",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1573,6 +1576,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
  "turso",
 ]
 
@@ -1587,6 +1591,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
  "turso",
 ]
 
