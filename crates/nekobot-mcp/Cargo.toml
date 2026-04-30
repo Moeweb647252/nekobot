@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt", "process"] }
+tracing.workspace = true
+nekobot-core.workspace = true
+rmcp = { version = "1.5", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "transport-child-process",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

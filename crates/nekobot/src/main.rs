@@ -46,6 +46,16 @@ async fn main() {
     nekobot_provider::register_providers(bot.provider_registry_mut())
         .expect("Failed to register providers");
 
+    // Register MCP middleware factory
+    bot.middleware_registry_mut()
+        .register("mcp", |config| {
+            let mcp: nekobot_mcp::McpConfig =
+                serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
+            Ok(std::sync::Arc::new(nekobot_mcp::McpMiddleware::from_config(mcp))
+                as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+        })
+        .expect("Failed to register MCP middleware");
+
     // Start the bot (connects channels, runs agents)
     if let Err(e) = bot.run().await {
         tracing::error!("NekoBot exited: {e}");

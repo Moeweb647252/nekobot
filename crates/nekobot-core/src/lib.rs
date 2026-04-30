@@ -110,6 +110,11 @@ impl<S> NekoBot<S> {
         &self.middleware_registry
     }
 
+    /// Return a mutable reference to the middleware registry.
+    pub fn middleware_registry_mut(&mut self) -> &mut agent::MiddlewareRegistry {
+        &mut self.middleware_registry
+    }
+
     /// Return a shared reference to the provider registry.
     pub fn provider_registry(&self) -> &provider::ProviderRegistry {
         &self.provider_registry

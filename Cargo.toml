@@ -9,6 +9,7 @@ anyhow = "1.0"
 nekobot-core = { path = "crates/nekobot-core" }
 nekobot-provider = { path = "crates/nekobot-provider" }
 nekobot-channel = { path = "crates/nekobot-channel" }
+nekobot-mcp = { path = "crates/nekobot-mcp" }
 turso = "0.5"
 serde = "1.0"
 toml = "1.1"
