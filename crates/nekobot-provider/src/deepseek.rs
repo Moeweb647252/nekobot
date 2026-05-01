@@ -11,8 +11,10 @@ use reqwest::{
     Client, StatusCode,
     header::{ACCEPT, HeaderMap, RETRY_AFTER},
 };
+use serde::de;
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Sender;
+use tracing::debug;
 
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const RESERVED_BODY_KEYS: &[&str] = &[
@@ -140,6 +142,25 @@ impl DeepSeekProvider {
             }
         }
 
+        if !request.chat.tools.is_empty() {
+            let tools: Vec<Value> = request
+                .chat
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters_schema,
+                        },
+                    })
+                })
+                .collect();
+            body.insert("tools".to_owned(), Value::Array(tools));
+        }
+
         if stream {
             body.insert("stream".to_owned(), Value::Bool(true));
             body.entry("stream_options".to_owned()).or_insert_with(|| {
@@ -173,12 +194,14 @@ impl Provider for DeepSeekProvider {
     /// Sends a non-streaming chat completion request and returns the full response.
     async fn complete(&self, request: ProviderRequest) -> Result<ChatResponse, ProviderError> {
         let body = self.build_body(&request, false)?;
+        debug!("sending DeepSeek chat completion request: {}", body);
         let response = self
             .request_builder(false)
             .json(&body)
             .send()
             .await
             .map_err(map_reqwest_error)?;
+        debug!("received DeepSeek response: {:?}", response);
 
         if !response.status().is_success() {
             return Err(map_http_error(response).await);
@@ -296,10 +319,6 @@ impl Provider for DeepSeekProvider {
 }
 
 fn validate_supported_request(request: &ProviderRequest) -> Result<(), ProviderError> {
-    if !request.chat.tools.is_empty() {
-        return Err(ProviderError::UnsupportedFeature("tools".to_owned()));
-    }
-
     if request
         .chat
         .messages
@@ -390,17 +409,14 @@ fn map_reqwest_error(error: reqwest::Error) -> ProviderError {
 async fn map_http_error(response: reqwest::Response) -> ProviderError {
     let status = response.status();
     let retry_after = retry_after(response.headers());
-    let message = response
-        .text()
-        .await
-        .ok()
-        .and_then(|body| api_error_message(&body))
-        .unwrap_or_else(|| {
-            status
-                .canonical_reason()
-                .unwrap_or("request failed")
-                .to_owned()
-        });
+    let body = response.text().await.ok().unwrap_or_default();
+    let message = api_error_message(&body).unwrap_or_else(|| {
+        let reason = status
+            .canonical_reason()
+            .unwrap_or("request failed")
+            .to_owned();
+        format!("{reason} (body: {body})")
+    });
 
     match status {
         StatusCode::UNAUTHORIZED => ProviderError::Authentication(message),
@@ -961,20 +977,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_are_not_supported_yet() {
-        let provider = DeepSeekProvider::new("key", "deepseek-v4-pro").unwrap();
+    async fn tools_are_serialized_in_request_body() {
+        let (base_url, request_receiver) =
+            mock_server(200, &[], r#"{"choices":[{"message":{"content":"ok"}}]}"#).await;
+        let provider =
+            DeepSeekProvider::from_config("key", "deepseek-v4-pro", Some(base_url)).unwrap();
         let mut request = request_with_message("hello");
         request.chat.tools = vec![ToolSpec {
             name: "tool".to_owned(),
-            description: "tool".to_owned(),
+            description: "does something".to_owned(),
             parameters_schema: json!({ "type": "object" }),
         }];
 
-        let result = provider.complete(request).await;
+        provider.complete(request).await.unwrap();
 
-        assert!(matches!(
-            result,
-            Err(ProviderError::UnsupportedFeature(feature)) if feature == "tools"
-        ));
+        let received = request_receiver.await.unwrap();
+        let tools = received.body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "tool");
     }
 }

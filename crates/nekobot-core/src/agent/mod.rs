@@ -116,7 +116,7 @@ impl MiddlewareRegistry {
     }
 }
 
-/// Configuration bundle used to construct an `AgentSession`, holding the resolved provider, middleware list, and model options.
+/// Configuration bundle used to construct an `AgentSession`, holding the resolved provider, middleware list, model options, and shared tool registry.
 #[derive(Clone)]
 pub struct AgentSessionConfig {
     pub agent_name: String,
@@ -344,9 +344,12 @@ impl AgentSession {
                 activation = activation_receiver.recv(), if activation_open => {
                     match activation {
                         Some(activation) => {
-                            let _ = self
+                            if let Err(e) = self
                                 .handle_activation(&app_db, ctx.clone(), activation, &output_sender)
-                                .await;
+                                .await
+                            {
+                                tracing::error!(target: "agent", "interact error: {e:#}");
+                            }
                         }
                         None => {
                             activation_open = false;
@@ -356,14 +359,17 @@ impl AgentSession {
                 event = event_receiver.recv(), if event_open => {
                     match event {
                         Some(event) => {
-                            let _ = self
+                            if let Err(e) = self
                                 .handle_activation(
                                     &app_db,
                                     ctx.clone(),
                                     AgentActivation::Middleware(event),
                                     &output_sender,
                                 )
-                                .await;
+                                .await
+                            {
+                                tracing::error!(target: "agent", "middleware activation error: {e:#}");
+                            }
                         }
                         None => {
                             event_open = false;

@@ -49,8 +49,14 @@ async fn main() {
     // Register MCP middleware factory
     bot.middleware_registry_mut()
         .register("mcp", |config| {
-            let mcp: nekobot_mcp::McpConfig =
-                serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
+            tracing::info!(target: "mcp", "creating MCP middleware from data: {:?}", config.data);
+            let mcp: nekobot_mcp::McpConfig = serde_json::from_value(
+                serde_json::Value::Object(config.data.clone()),
+            )
+            .map_err(|e| {
+                tracing::error!(target: "mcp", "failed to parse MCP config: {e}");
+                anyhow::anyhow!("failed to parse MCP config: {e}")
+            })?;
             Ok(std::sync::Arc::new(nekobot_mcp::McpMiddleware::from_config(mcp))
                 as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
         })

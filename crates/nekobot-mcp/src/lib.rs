@@ -8,6 +8,7 @@
 //! - `transport: stdio` — spawns a child process, e.g. `command: npx` + `args: [...]`
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nekobot_core::agent::{
     Context,
@@ -19,11 +20,13 @@ use rmcp::{
     model::{CallToolRequestParams, PaginatedRequestParams},
     service::{Peer, RoleClient, serve_client},
     transport::{
-        child_process::TokioChildProcess, streamable_http_client::StreamableHttpClientTransport,
+        child_process::TokioChildProcess,
+        streamable_http_client::StreamableHttpClientTransport,
     },
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::debug;
 
 /// Deserialized from `MiddlewareConfig.data` via `#[serde(tag = "transport")]`.
 ///
@@ -42,7 +45,7 @@ use serde_json::Value;
 ///   args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
 /// ```
 #[derive(Deserialize)]
-#[serde(tag = "transport", deny_unknown_fields)]
+#[serde(tag = "transport")]
 pub enum McpConfig {
     /// Streamable HTTP transport (the default when `transport` is absent).
     #[serde(rename = "http")]
@@ -82,14 +85,20 @@ impl Middleware for McpMiddleware {
     }
 
     async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
+        debug!("connecting to MCP server {}", self.name());
         let (server, peer) =
             match &self.config {
                 McpConfig::Http { server, url } => {
                     let transport = StreamableHttpClientTransport::from_uri(url.as_str());
-                    let running =
-                        Box::new(serve_client(EmptyHandler, transport).await.map_err(|e| {
-                            anyhow::anyhow!("failed to connect to MCP server: {e}")
-                        })?);
+                    let running = Box::new(
+                        tokio::time::timeout(
+                            Duration::from_secs(30),
+                            serve_client(EmptyHandler, transport),
+                        )
+                        .await
+                        .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server: {url}"))?
+                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?,
+                    );
                     let peer = running.peer().clone();
                     Box::leak(running);
                     (server.as_str(), peer)
@@ -101,12 +110,37 @@ impl Middleware for McpMiddleware {
                 } => {
                     let mut cmd = tokio::process::Command::new(command);
                     cmd.args(args);
-                    let transport = TokioChildProcess::new(cmd)
+                    // New process group so the child doesn't receive Ctrl+C
+                    #[cfg(unix)]
+                    cmd.process_group(0);
+
+                    let builder = TokioChildProcess::builder(cmd)
+                        .stderr(std::process::Stdio::piped());
+                    let (transport, stderr) = builder
+                        .spawn()
                         .map_err(|e| anyhow::anyhow!("failed to spawn MCP child process: {e}"))?;
-                    let running =
-                        Box::new(serve_client(EmptyHandler, transport).await.map_err(|e| {
-                            anyhow::anyhow!("failed to connect to MCP server: {e}")
-                        })?);
+
+                    // Drain stderr in the background so the child doesn't block
+                    if let Some(stderr) = stderr {
+                        use tokio::io::AsyncBufReadExt;
+                        tokio::spawn(async move {
+                            let reader = tokio::io::BufReader::new(stderr);
+                            let mut lines = reader.lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                tracing::debug!(target: "mcp.stdio", "{line}");
+                            }
+                        });
+                    }
+
+                    let running = Box::new(
+                        tokio::time::timeout(
+                            Duration::from_secs(30),
+                            serve_client(EmptyHandler, transport),
+                        )
+                        .await
+                        .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server"))?
+                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?,
+                    );
                     let peer = running.peer().clone();
                     Box::leak(running);
                     (server.as_str(), peer)
@@ -119,7 +153,7 @@ impl Middleware for McpMiddleware {
             .map_err(|e| anyhow::anyhow!("failed to list MCP tools: {e}"))?;
 
         for tool in tools.tools {
-            let key = format!("mcp.{server}.{}", tool.name);
+            let key = format!("mcp_{server}_{}", tool.name);
             tracing::info!(target: "mcp", "registering {key}");
 
             let input_schema: Value = serde_json::to_value(&*tool.input_schema).unwrap_or_default();
