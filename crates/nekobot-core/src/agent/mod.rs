@@ -1,7 +1,7 @@
 //! Agent session management, middleware pipeline, tool injection, and provider-based request handling.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::Arc,
 };
 
@@ -261,12 +261,6 @@ impl AgentSession {
         loop {
             iteration += 1;
 
-            // Inject tools on every iteration (tool list may change)
-            if let Err(error) = self.inject_registered_tool_specs(&ctx, &mut request) {
-                self.run_error_hooks(&ctx, &error, 0).await;
-                return Err(error);
-            }
-
             // Run before_chat middleware only on first iteration
             let mut response = if first_iteration {
                 first_iteration = false;
@@ -378,30 +372,6 @@ impl AgentSession {
                 });
             }
         }
-    }
-
-    fn inject_registered_tool_specs(
-        &self,
-        ctx: &Context,
-        request: &mut ChatRequest,
-    ) -> anyhow::Result<()> {
-        if !self.model_options.capabilities.tools {
-            return Ok(());
-        }
-
-        let mut names = request
-            .tools
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<BTreeSet<_>>();
-
-        for spec in ctx.tool_registry().tool_specs()? {
-            if names.insert(spec.name.clone()) {
-                request.tools.push(spec);
-            }
-        }
-
-        Ok(())
     }
 
     async fn run_loop(

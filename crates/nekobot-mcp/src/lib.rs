@@ -7,13 +7,14 @@
 //! - `transport: http`  (default) — Streamable HTTP, e.g. `url: http://localhost:8080/mcp`
 //! - `transport: stdio` — spawns a child process, e.g. `command: npx` + `args: [...]`
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use nekobot_core::agent::{
     Context,
-    middleware::Middleware,
-    tool::{Tool, ToolError, ToolResult},
+    middleware::{Middleware, MiddlewareFlow},
+    tool::{Tool, ToolError, ToolResult, ToolSpec},
+    types::ChatRequest,
 };
 use rmcp::{
     handler::client::ClientHandler,
@@ -63,12 +64,16 @@ pub enum McpConfig {
 /// Middleware that connects to an MCP server and registers its tools.
 pub struct McpMiddleware {
     config: McpConfig,
+    tool_specs: RwLock<Vec<ToolSpec>>,
 }
 
 impl McpMiddleware {
     /// Create from a parsed [`McpConfig`].
     pub fn from_config(config: McpConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            tool_specs: RwLock::new(Vec::new()),
+        }
     }
 }
 
@@ -82,6 +87,18 @@ impl ClientHandler for EmptyHandler {}
 impl Middleware for McpMiddleware {
     fn name(&self) -> &'static str {
         "mcp"
+    }
+
+    async fn before_chat(
+        &self,
+        _ctx: &Context,
+        request: &mut ChatRequest,
+    ) -> Result<MiddlewareFlow, anyhow::Error> {
+        let specs = self.tool_specs.read().map_err(|e| {
+            anyhow::anyhow!("MCP tool_specs lock poisoned: {e}")
+        })?;
+        request.tools.extend(specs.iter().cloned());
+        Ok(MiddlewareFlow::Continue)
     }
 
     async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
@@ -152,11 +169,21 @@ impl Middleware for McpMiddleware {
             .await
             .map_err(|e| anyhow::anyhow!("failed to list MCP tools: {e}"))?;
 
+        let mut specs = self.tool_specs.write().map_err(|e| {
+            anyhow::anyhow!("MCP tool_specs lock poisoned: {e}")
+        })?;
+
         for tool in tools.tools {
             let key = format!("mcp_{server}_{}", tool.name);
             tracing::info!(target: "mcp", "registering {key}");
 
             let input_schema: Value = serde_json::to_value(&*tool.input_schema).unwrap_or_default();
+
+            specs.push(ToolSpec {
+                name: key.clone(),
+                description: tool.description.as_deref().unwrap_or("").to_string(),
+                parameters_schema: input_schema.clone(),
+            });
 
             ctx.tool_registry().register(Arc::new(McpTool {
                 key,
