@@ -167,7 +167,9 @@ impl QQChannel {
             }
             Request::StartTyping { target } => {
                 if let Some(openid) = parse_c2c_target(target) {
-                    let _ = send_c2c_input_notify(&self.http, token, openid).await;
+                    if let Err(e) = send_c2c_input_notify(&self.http, token, openid).await {
+                        tracing::debug!(target: "qqbot", "input notify failed: {e}");
+                    }
                 }
             }
             Request::StopTyping { .. } => {}
@@ -290,6 +292,21 @@ fn parse_group_target(target: &ReplyTarget) -> Option<&str> {
     target.as_str().strip_prefix("group:")
 }
 
+// ── Error types ──
+
+/// Sentinel error returned by HTTP send helpers when the server responds 401.
+/// The caller (`send()`) uses downcast to detect this and trigger a token refresh.
+#[derive(Debug)]
+struct TokenExpiredError;
+
+impl std::fmt::Display for TokenExpiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "QQ bot access token has expired")
+    }
+}
+
+impl std::error::Error for TokenExpiredError {}
+
 // ── Channel trait impl ──
 
 #[async_trait::async_trait]
@@ -335,7 +352,7 @@ impl Channel for QQChannel {
     async fn send(&self, request: Request) -> anyhow::Result<()> {
         let token = self.get_token().await?;
         if let Err(e) = self.send_with_token(&token, &request).await {
-            if e.to_string().contains("QQBOT_TOKEN_EXPIRED") {
+            if e.downcast_ref::<TokenExpiredError>().is_some() {
                 tracing::info!(target: "qqbot", "token expired, refreshing and retrying");
                 self.clear_token().await;
                 let new_token = self.get_token().await?;
@@ -350,8 +367,8 @@ impl Channel for QQChannel {
 
 // ── Gateway event loop ──
 
-/// Fetch a new access token via HTTP.
-async fn fetch_token(http: &Client, app_id: &str, client_secret: &str) -> anyhow::Result<String> {
+/// Fetch a new access token via HTTP. Returns `(token, expires_in)`.
+async fn fetch_token(http: &Client, app_id: &str, client_secret: &str) -> anyhow::Result<(String, Option<u64>)> {
     let resp: TokenResponse = http
         .post(TOKEN_URL)
         .json(&serde_json::json!({
@@ -364,7 +381,7 @@ async fn fetch_token(http: &Client, app_id: &str, client_secret: &str) -> anyhow
         .json()
         .await
         .context("failed to parse access token response")?;
-    Ok(resp.access_token)
+    Ok((resp.access_token, resp.expires_in))
 }
 
 /// Fetch the WebSocket gateway URL.
@@ -398,7 +415,7 @@ async fn run_gateway_loop(
     client_secret: &str,
     gateway_url: &str,
     token: &str,
-    _state: Arc<Mutex<ChannelState>>,
+    state: Arc<Mutex<ChannelState>>,
     event_tx: mpsc::Sender<Event>,
 ) -> anyhow::Result<()> {
     let mut current_token = token.to_owned();
@@ -431,7 +448,14 @@ async fn run_gateway_loop(
 
         // Refresh token and gateway URL before reconnecting
         match fetch_token(http, app_id, client_secret).await {
-            Ok(t) => current_token = t,
+            Ok((token, expires_in)) => {
+                let expires_in = expires_in.unwrap_or(7200).max(60);
+                state.lock().await.token = Some(CachedToken {
+                    value: token.clone(),
+                    expires_at: Instant::now() + Duration::from_secs(expires_in),
+                });
+                current_token = token;
+            }
             Err(e) => {
                 tracing::error!(target: "qqbot", "failed to refresh token: {e}");
                 attempt += 1;
@@ -482,6 +506,7 @@ async fn run_gateway_session(
                 match msg {
                     Message::Text(text) => {
                         let Ok(payload) = serde_json::from_str::<WSPayload>(&text) else {
+                            tracing::debug!(target: "qqbot", "unparseable ws payload: {text}");
                             continue;
                         };
 
@@ -512,7 +537,9 @@ async fn run_gateway_session(
                     }
                     Message::Close(_) => break,
                     Message::Ping(data) => {
-                        let _ = ws.send(Message::Pong(data)).await;
+                        if let Err(e) = ws.send(Message::Pong(data)).await {
+                            tracing::debug!(target: "qqbot", "failed to send pong: {e}");
+                        }
                     }
                     _ => {}
                 }
@@ -613,7 +640,7 @@ async fn send_c2c_message(
         .context("failed to send C2C message")?;
 
     if resp.status().as_u16() == 401 {
-        anyhow::bail!("QQBOT_TOKEN_EXPIRED");
+        return Err(anyhow::Error::new(TokenExpiredError));
     }
     Ok(())
 }
@@ -640,7 +667,7 @@ async fn send_group_message(
         .context("failed to send group message")?;
 
     if resp.status().as_u16() == 401 {
-        anyhow::bail!("QQBOT_TOKEN_EXPIRED");
+        return Err(anyhow::Error::new(TokenExpiredError));
     }
     Ok(())
 }

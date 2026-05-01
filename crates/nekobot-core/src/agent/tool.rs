@@ -47,10 +47,10 @@ impl ToolSpec {
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Unique name used in provider tool-use schemas.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
     /// Human-readable description.
-    fn description(&self) -> &'static str;
+    fn description(&self) -> &str;
 
     /// JSON Schema describing the tool's parameters.
     fn parameters_schema(&self) -> Value;
@@ -93,9 +93,13 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Look up a tool by name. Returns `None` if not found.
-    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().ok()?.get(name).cloned()
+    /// Look up a tool by name. Returns `Ok(None)` if not found.
+    pub fn get(&self, name: &str) -> anyhow::Result<Option<Arc<dyn Tool>>> {
+        let tools = self
+            .tools
+            .read()
+            .map_err(|_| anyhow::anyhow!("tool registry lock poisoned"))?;
+        Ok(tools.get(name).cloned())
     }
 
     /// Return metadata specs for all registered tools.
@@ -133,16 +137,16 @@ mod tests {
     use super::*;
 
     struct TestTool {
-        name: &'static str,
+        name: String,
     }
 
     #[async_trait]
     impl Tool for TestTool {
-        fn name(&self) -> &'static str {
-            self.name
+        fn name(&self) -> &str {
+            &self.name
         }
 
-        fn description(&self) -> &'static str {
+        fn description(&self) -> &str {
             "test tool"
         }
 
@@ -162,7 +166,7 @@ mod tests {
 
     #[test]
     fn tool_spec_copies_metadata_without_executable_tool() {
-        let tool = TestTool { name: "test" };
+        let tool = TestTool { name: "test".to_owned() };
         let spec = ToolSpec::from_tool(&tool);
 
         assert_eq!(spec.name, "test");
@@ -174,7 +178,7 @@ mod tests {
     fn tool_registry_builds_specs_for_registered_tools() -> anyhow::Result<()> {
         let registry = ToolRegistry::new();
 
-        registry.register(Arc::new(TestTool { name: "test" }))?;
+        registry.register(Arc::new(TestTool { name: "test".to_owned() }))?;
 
         let specs = registry.tool_specs()?;
         assert_eq!(specs.len(), 1);
@@ -189,8 +193,8 @@ mod tests {
     fn tool_registry_rejects_duplicate_names() -> anyhow::Result<()> {
         let registry = ToolRegistry::new();
 
-        registry.register(Arc::new(TestTool { name: "test" }))?;
-        let result = registry.register(Arc::new(TestTool { name: "test" }));
+        registry.register(Arc::new(TestTool { name: "test".to_owned() }))?;
+        let result = registry.register(Arc::new(TestTool { name: "test".to_owned() }));
 
         assert!(result.is_err());
         Ok(())
@@ -200,11 +204,11 @@ mod tests {
     fn tool_registry_get_returns_registered_tool() -> anyhow::Result<()> {
         let registry = ToolRegistry::new();
 
-        registry.register(Arc::new(TestTool { name: "test" }))?;
+        registry.register(Arc::new(TestTool { name: "test".to_owned() }))?;
 
-        let tool = registry.get("test").expect("tool should be registered");
+        let tool = registry.get("test")?.expect("tool should be registered");
         assert_eq!(tool.name(), "test");
-        assert!(registry.get("missing").is_none());
+        assert!(registry.get("missing")?.is_none());
         Ok(())
     }
 }

@@ -4,7 +4,7 @@ use std::fmt::Display;
 
 use turso::Connection;
 
-use crate::entity::{Entity, enable_foreign_keys, session::Session};
+use crate::entity::{Entity, collect_rows, enable_foreign_keys, session::Session};
 
 /// A single chat message belonging to a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,15 +145,7 @@ impl Message {
         Ok(changed > 0)
     }
 
-    async fn collect_rows(rows: &mut turso::Rows) -> anyhow::Result<Vec<Self>> {
-        let mut messages = Vec::new();
-
-        while let Some(row) = rows.next().await? {
-            messages.push(Self::from_row(&row)?);
-        }
-
-        Ok(messages)
-    }
+    collect_rows!(Message);
 
     fn from_row(row: &turso::Row) -> anyhow::Result<Self> {
         Ok(Self {
@@ -193,6 +185,7 @@ impl Entity for Message {
 pub enum Role {
     User,
     Assistant,
+    Tool,
     Custom(String),
 }
 
@@ -201,6 +194,7 @@ impl Display for Role {
         match self {
             Role::User => write!(f, "user"),
             Role::Assistant => write!(f, "assistant"),
+            Role::Tool => write!(f, "tool"),
             Role::Custom(role) => write!(f, "{role}"),
         }
     }

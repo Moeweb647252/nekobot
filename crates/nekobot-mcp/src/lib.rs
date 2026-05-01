@@ -27,6 +27,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::task::AbortHandle;
 use tracing::debug;
 
 /// Deserialized from `MiddlewareConfig.data` via `#[serde(tag = "transport")]`.
@@ -65,6 +66,8 @@ pub enum McpConfig {
 pub struct McpMiddleware {
     config: McpConfig,
     tool_specs: RwLock<Vec<ToolSpec>>,
+    /// Abort handles for the background MCP connection tasks. Aborted on drop.
+    _tasks: std::sync::Mutex<Vec<AbortHandle>>,
 }
 
 impl McpMiddleware {
@@ -73,6 +76,17 @@ impl McpMiddleware {
         Self {
             config,
             tool_specs: RwLock::new(Vec::new()),
+            _tasks: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Drop for McpMiddleware {
+    fn drop(&mut self) {
+        if let Ok(tasks) = self._tasks.lock() {
+            for handle in tasks.iter() {
+                handle.abort();
+            }
         }
     }
 }
@@ -107,17 +121,30 @@ impl Middleware for McpMiddleware {
             match &self.config {
                 McpConfig::Http { server, url } => {
                     let transport = StreamableHttpClientTransport::from_uri(url.as_str());
-                    let running = Box::new(
-                        tokio::time::timeout(
-                            Duration::from_secs(30),
-                            serve_client(EmptyHandler, transport),
-                        )
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let task = tokio::spawn(async move {
+                        match serve_client(EmptyHandler, transport).await {
+                            Ok(running) => {
+                                let peer = running.peer().clone();
+                                let _ = tx.send(Ok(peer));
+                                // Keep the connection alive indefinitely
+                                std::future::pending::<()>().await;
+                                drop(running);
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
+                            }
+                        }
+                    });
+                    self._tasks.lock().map_err(|e| {
+                        anyhow::anyhow!("MCP task lock poisoned: {e}")
+                    })?.push(task.abort_handle());
+
+                    let peer = tokio::time::timeout(Duration::from_secs(30), rx)
                         .await
                         .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server: {url}"))?
-                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?,
-                    );
-                    let peer = running.peer().clone();
-                    Box::leak(running);
+                        .map_err(|_| anyhow::anyhow!("MCP task panicked"))?
+                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?;
                     (server.as_str(), peer)
                 }
                 McpConfig::Stdio {
@@ -149,17 +176,29 @@ impl Middleware for McpMiddleware {
                         });
                     }
 
-                    let running = Box::new(
-                        tokio::time::timeout(
-                            Duration::from_secs(30),
-                            serve_client(EmptyHandler, transport),
-                        )
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let task = tokio::spawn(async move {
+                        match serve_client(EmptyHandler, transport).await {
+                            Ok(running) => {
+                                let peer = running.peer().clone();
+                                let _ = tx.send(Ok(peer));
+                                std::future::pending::<()>().await;
+                                drop(running);
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
+                            }
+                        }
+                    });
+                    self._tasks.lock().map_err(|e| {
+                        anyhow::anyhow!("MCP task lock poisoned: {e}")
+                    })?.push(task.abort_handle());
+
+                    let peer = tokio::time::timeout(Duration::from_secs(30), rx)
                         .await
                         .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server"))?
-                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?,
-                    );
-                    let peer = running.peer().clone();
-                    Box::leak(running);
+                        .map_err(|_| anyhow::anyhow!("MCP task panicked"))?
+                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?;
                     (server.as_str(), peer)
                 }
             };
@@ -177,7 +216,10 @@ impl Middleware for McpMiddleware {
             let key = format!("mcp_{server}_{}", tool.name);
             tracing::info!(target: "mcp", "registering {key}");
 
-            let input_schema: Value = serde_json::to_value(&*tool.input_schema).unwrap_or_default();
+            let input_schema: Value = serde_json::to_value(&*tool.input_schema).unwrap_or_else(|e| {
+                tracing::warn!(target: "mcp", "failed to serialize input schema for {key}: {e}");
+                Value::default()
+            });
 
             specs.push(ToolSpec {
                 name: key.clone(),
@@ -209,12 +251,12 @@ struct McpTool {
 
 #[async_trait::async_trait]
 impl Tool for McpTool {
-    fn name(&self) -> &'static str {
-        Box::leak(self.key.clone().into_boxed_str())
+    fn name(&self) -> &str {
+        &self.key
     }
 
-    fn description(&self) -> &'static str {
-        Box::leak(self.description.clone().into_boxed_str())
+    fn description(&self) -> &str {
+        &self.description
     }
 
     fn parameters_schema(&self) -> Value {

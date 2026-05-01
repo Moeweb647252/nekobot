@@ -10,10 +10,14 @@ use nekobot_core::config::ProviderConfig;
 
 pub mod deepseek;
 pub mod openai_codex;
+pub(crate) mod utils;
 
-pub use deepseek::*;
-pub use nekobot_core::provider::*;
-pub use openai_codex::*;
+pub use deepseek::DeepSeekProvider;
+pub use nekobot_core::provider::{
+    ModelCapabilities, ModelOptions, Provider, ProviderError, ProviderEvent, ProviderRegistry,
+    ProviderRequest,
+};
+pub use openai_codex::OpenAiCodexProvider;
 
 /// Register the DeepSeek and OpenAI Codex provider factories into a registry.
 ///

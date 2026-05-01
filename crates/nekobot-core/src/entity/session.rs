@@ -2,7 +2,7 @@
 
 use turso::Connection;
 
-use crate::entity::{Entity, enable_foreign_keys};
+use crate::entity::{Entity, collect_rows, enable_foreign_keys};
 
 /// A chat session that groups messages under an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,15 +96,7 @@ impl Session {
         Ok(changed > 0)
     }
 
-    async fn collect_rows(rows: &mut turso::Rows) -> anyhow::Result<Vec<Self>> {
-        let mut sessions = Vec::new();
-
-        while let Some(row) = rows.next().await? {
-            sessions.push(Self::from_row(&row)?);
-        }
-
-        Ok(sessions)
-    }
+    collect_rows!(Session);
 
     fn from_row(row: &turso::Row) -> anyhow::Result<Self> {
         Ok(Self {

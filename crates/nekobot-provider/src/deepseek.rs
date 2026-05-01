@@ -1,17 +1,13 @@
 //! DeepSeek API provider implementation.
 
-use std::{fmt, time::Duration};
+use std::fmt;
 
 use futures_util::StreamExt;
 use nekobot_core::{
     agent::types::{ChatMessage, ChatResponse, Role, ToolCall, Usage},
     provider::{Provider, ProviderError, ProviderEvent, ProviderRequest},
 };
-use reqwest::{
-    Client, StatusCode,
-    header::{ACCEPT, HeaderMap, RETRY_AFTER},
-};
-use serde::de;
+use reqwest::{Client, StatusCode, header::ACCEPT};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
@@ -325,7 +321,7 @@ fn validate_supported_request(request: &ProviderRequest) -> Result<(), ProviderE
         .chat
         .messages
         .iter()
-        .any(|message| !message.content.images.is_empty())
+        .any(|message| !message.content.images().is_empty())
     {
         return Err(ProviderError::UnsupportedFeature("vision".to_owned()));
     }
@@ -348,57 +344,55 @@ fn chat_messages(request: &nekobot_core::agent::types::ChatRequest) -> Value {
 }
 
 fn chat_message(message: &ChatMessage) -> Value {
+    let text = message.content.text();
+    let tool_calls = message.content.tool_calls();
     match &message.role {
         Role::User => {
-            json!({
-                "role": "user",
-                "content": message.content.content,
-            })
+            json!({ "role": "user", "content": text })
         }
         Role::Assistant => {
-            let content = message.content.content.clone();
             let mut msg = json!({
                 "role": "assistant",
-                "content": content,
+                "content": text,
             });
-            if let Some(reasoning) = &message.content.reasoning_content {
+            if let Some(reasoning) = message.content.reasoning() {
                 if !reasoning.is_empty() {
-                    msg["reasoning_content"] = Value::String(reasoning.clone());
+                    msg["reasoning_content"] = Value::String(reasoning.to_owned());
                 }
             }
-            if !message.content.tool_calls.is_empty() {
+            if !tool_calls.is_empty() {
                 msg["tool_calls"] =
-                    serde_json::to_value(&message.content.tool_calls).unwrap_or_default();
+                    serde_json::to_value(tool_calls).unwrap_or_default();
             }
-            if content.is_empty() && !message.content.tool_calls.is_empty() {
+            if text.is_empty() && !tool_calls.is_empty() {
                 msg["content"] = Value::Null;
             }
             msg
         }
         Role::Tool => {
-            if let Some(tool_call_id) = &message.content.tool_call_id {
+            if let Some(tool_call_id) = message.content.tool_call_id() {
                 json!({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": message.content.content,
+                    "content": text,
                 })
             } else {
                 json!({
                     "role": "tool",
-                    "content": message.content.content,
+                    "content": text,
                 })
             }
         }
         Role::Custom(role) if role == "system" || role == "developer" => {
             json!({
                 "role": "system",
-                "content": message.content.content,
+                "content": text,
             })
         }
         Role::Custom(role) => {
             json!({
                 "role": "user",
-                "content": format!("[{role}] {}", message.content.content),
+                "content": format!("[{role}] {}", text),
             })
         }
     }
@@ -447,13 +441,7 @@ fn parse_usage(usage: Option<&Value>) -> Option<Usage> {
     })
 }
 
-fn map_reqwest_error(error: reqwest::Error) -> ProviderError {
-    if error.is_timeout() {
-        ProviderError::Timeout(error.to_string())
-    } else {
-        ProviderError::Remote(error.to_string())
-    }
-}
+use crate::utils::{api_error_message, find_sse_boundary, map_reqwest_error, retry_after};
 
 async fn map_http_error(response: reqwest::Response) -> ProviderError {
     let status = response.status();
@@ -483,41 +471,10 @@ async fn map_http_error(response: reqwest::Response) -> ProviderError {
     }
 }
 
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    headers
-        .get(RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_secs)
-}
-
-fn api_error_message(body: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(body).ok()?;
-    value
-        .get("error")
-        .and_then(|error| error.get("message").or(Some(error)))
-        .and_then(Value::as_str)
-        .or_else(|| value.get("message").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-}
-
 enum SseEvent {
     Empty,
     Done,
     Data(Value),
-}
-
-fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|position| (position, 4))
-        .or_else(|| {
-            buffer
-                .windows(2)
-                .position(|window| window == b"\n\n")
-                .map(|position| (position, 2))
-        })
 }
 
 fn parse_sse_event(bytes: &[u8]) -> Result<SseEvent, ProviderError> {
@@ -563,7 +520,7 @@ fn response_error_message(event: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use nekobot_core::{
         agent::{
@@ -696,12 +653,9 @@ mod tests {
             chat: ChatRequest {
                 messages: vec![ChatMessage {
                     role: Role::User,
-                    content: ChatMessageContent {
-                        content: content.into(),
-                        reasoning_content: None,
+                    content: ChatMessageContent::User {
+                        text: content.into(),
                         images: Vec::new(),
-                        tool_calls: Vec::new(),
-                        tool_call_id: None,
                     },
                 }],
                 system_prompt: Some("be useful".to_owned()),
@@ -786,22 +740,16 @@ mod tests {
         request.chat.messages = vec![
             ChatMessage {
                 role: Role::Custom("developer".to_owned()),
-                content: ChatMessageContent {
-                    content: "dev rules".to_owned(),
-                    reasoning_content: None,
+                content: ChatMessageContent::User {
+                    text: "dev rules".to_owned(),
                     images: Vec::new(),
-                    tool_calls: Vec::new(),
-                    tool_call_id: None,
                 },
             },
             ChatMessage {
                 role: Role::Custom("internal".to_owned()),
-                content: ChatMessageContent {
-                    content: "internal note".to_owned(),
-                    reasoning_content: None,
+                content: ChatMessageContent::User {
+                    text: "internal note".to_owned(),
                     images: Vec::new(),
-                    tool_calls: Vec::new(),
-                    tool_call_id: None,
                 },
             },
         ];

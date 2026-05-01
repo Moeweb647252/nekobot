@@ -3,7 +3,6 @@
 //! Defines the [`Provider`] trait, request/response types, error types,
 //! streaming events, and the [`ProviderRegistry`] factory pattern.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +12,7 @@ use serde_json::{Map, Value};
 use tokio::sync::mpsc::Sender;
 
 use crate::agent::types::{ChatRequest, ChatResponse, Usage};
+use crate::registry::FactoryRegistry;
 use crate::config::ProviderConfig;
 
 /// A chat completion request combined with model options.
@@ -116,17 +116,12 @@ pub trait Provider: Send + Sync {
 }
 
 /// Factory closure type for creating a provider from its config.
-pub type ProviderCreateFn =
-    Arc<dyn Fn(&ProviderConfig) -> anyhow::Result<Arc<dyn Provider>> + Send + Sync>;
-
-/// Registry of named provider factories.
-///
-/// Maps provider type names (e.g. `"DeepSeek"`, `"OpenAICodex"`) to factory
+/// Registry of provider factories, mapping type names (e.g. `"DeepSeek"`) to factory
 /// closures. External crates (e.g. `nekobot-provider`) register factories;
 /// the core uses them to instantiate providers from [`ProviderConfig`] entries.
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
-    factories: HashMap<String, ProviderCreateFn>,
+    inner: FactoryRegistry<ProviderConfig, Arc<dyn Provider>>,
 }
 
 impl ProviderRegistry {
@@ -142,24 +137,14 @@ impl ProviderRegistry {
     where
         F: Fn(&ProviderConfig) -> anyhow::Result<Arc<dyn Provider>> + Send + Sync + 'static,
     {
-        let name = name.into();
-        if name.trim().is_empty() {
-            anyhow::bail!("provider factory name cannot be empty");
-        }
-
-        if self.factories.contains_key(&name) {
-            anyhow::bail!("duplicate provider factory: {name}");
-        }
-
-        self.factories.insert(name, Arc::new(create));
-        Ok(())
+        self.inner.register(name, create)
     }
 
     /// Create a provider from its config, looking up the factory by type name.
     ///
     /// Returns `Ok(None)` if no factory is registered for the config's type.
     pub fn create(&self, config: &ProviderConfig) -> anyhow::Result<Option<Arc<dyn Provider>>> {
-        let Some(factory) = self.factories.get(config.type_name()) else {
+        let Some(factory) = self.inner.get(config.type_name()) else {
             return Ok(None);
         };
 
@@ -191,6 +176,7 @@ mod tests {
             Ok(ChatResponse {
                 content: String::new(),
                 reasoning_content: None,
+                tool_calls: Vec::new(),
                 images: Vec::new(),
                 usage: None,
             })

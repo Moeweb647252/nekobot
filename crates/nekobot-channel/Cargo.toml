@@ -7,7 +7,7 @@ edition = "2024"
 async-trait.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
-turso.workspace = true
+
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",

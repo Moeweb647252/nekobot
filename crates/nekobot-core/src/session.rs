@@ -12,12 +12,12 @@ static MESSAGE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 /// A handle to an active session, combining a database connection and session ID.
 ///
 /// Used by [`AgentSession`](crate::agent::AgentSession) to persist messages.
-pub struct Session {
+pub struct SessionHandle {
     pub session_id: i64,
     pub app_db: Connection,
 }
 
-impl Session {
+impl SessionHandle {
     /// Persist a chat message to the database.
     ///
     /// Generates a unique message ID from timestamp + atomic sequence.

@@ -3,17 +3,14 @@
 //! This module provides [`OpenAiCodexProvider`], a [`Provider`] that communicates with
 //! the OpenAI Codex completions API (chatgpt.com/backend-api/codex).
 
-use std::{fmt, time::Duration};
+use std::fmt;
 
 use futures_util::StreamExt;
 use nekobot_core::{
     agent::types::{ChatMessage, ChatResponse, Role, Usage},
     provider::{Provider, ProviderError, ProviderEvent, ProviderRequest},
 };
-use reqwest::{
-    Client, StatusCode,
-    header::{ACCEPT, HeaderMap, RETRY_AFTER},
-};
+use reqwest::{Client, StatusCode, header::ACCEPT};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Sender;
 
@@ -356,7 +353,7 @@ fn validate_supported_request(request: &ProviderRequest) -> Result<(), ProviderE
         .chat
         .messages
         .iter()
-        .any(|message| !message.content.images.is_empty())
+        .any(|message| !message.content.images().is_empty())
     {
         return Err(ProviderError::UnsupportedFeature("vision".to_owned()));
     }
@@ -369,14 +366,15 @@ fn chat_input(messages: &[ChatMessage]) -> Value {
 }
 
 fn chat_message_input(message: &ChatMessage) -> Value {
+    let text = message.content.text();
     let (role, content) = match &message.role {
-        Role::User => ("user", message.content.content.clone()),
-        Role::Assistant => ("assistant", message.content.content.clone()),
-        Role::Tool => ("tool", message.content.content.clone()),
+        Role::User => ("user", text.to_owned()),
+        Role::Assistant => ("assistant", text.to_owned()),
+        Role::Tool => ("tool", text.to_owned()),
         Role::Custom(role) if role == "system" || role == "developer" => {
-            (role.as_str(), message.content.content.clone())
+            (role.as_str(), text.to_owned())
         }
-        Role::Custom(role) => ("user", format!("[{role}] {}", message.content.content)),
+        Role::Custom(role) => ("user", format!("[{role}] {}", text)),
     };
     let content_type = if role == "assistant" {
         "output_text"
@@ -485,13 +483,7 @@ fn parse_usage(usage: Option<&Value>) -> Option<Usage> {
     })
 }
 
-fn map_reqwest_error(error: reqwest::Error) -> ProviderError {
-    if error.is_timeout() {
-        ProviderError::Timeout(error.to_string())
-    } else {
-        ProviderError::Remote(error.to_string())
-    }
-}
+use crate::utils::{api_error_message, map_reqwest_error, retry_after};
 
 async fn map_http_error(response: reqwest::Response) -> ProviderError {
     let status = response.status();
@@ -520,41 +512,12 @@ async fn map_http_error(response: reqwest::Response) -> ProviderError {
     }
 }
 
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    headers
-        .get(RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_secs)
-}
-
-fn api_error_message(body: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(body).ok()?;
-    value
-        .get("error")
-        .and_then(|error| error.get("message").or(Some(error)))
-        .and_then(Value::as_str)
-        .or_else(|| value.get("message").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-}
-
 struct SseEvent {
     kind: String,
     data: Value,
 }
 
-fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|position| (position, 4))
-        .or_else(|| {
-            buffer
-                .windows(2)
-                .position(|window| window == b"\n\n")
-                .map(|position| (position, 2))
-        })
-}
+use crate::utils::find_sse_boundary;
 
 fn parse_sse_event(bytes: &[u8]) -> Result<Option<SseEvent>, ProviderError> {
     let event = std::str::from_utf8(bytes)
@@ -625,7 +588,7 @@ fn response_incomplete_message(event: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use nekobot_core::{
         agent::{
@@ -761,12 +724,9 @@ mod tests {
             chat: ChatRequest {
                 messages: vec![ChatMessage {
                     role: Role::User,
-                    content: ChatMessageContent {
-                        content: content.into(),
-                        reasoning_content: None,
+                    content: ChatMessageContent::User {
+                        text: content.into(),
                         images: Vec::new(),
-                        tool_calls: Vec::new(),
-                        tool_call_id: None,
                     },
                 }],
                 system_prompt: Some("be useful".to_owned()),

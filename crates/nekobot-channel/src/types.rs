@@ -14,7 +14,7 @@ macro_rules! string_newtype {
                 &self.0
             }
 
-            pub fn into_string(self) -> String {
+            pub fn into_inner(self) -> String {
                 self.0
             }
         }
@@ -48,6 +48,13 @@ macro_rules! string_newtype {
 string_newtype!(ChannelId, "Unique identifier for a channel instance.");
 string_newtype!(ChannelName, "Human-readable name of a channel.");
 string_newtype!(ChatId, "Unique identifier for a conversation within a channel.");
+
+impl ChatId {
+    /// Returns true if this is a C2C (private) chat.
+    pub fn is_c2c(&self) -> bool {
+        self.0.starts_with("c2c:")
+    }
+}
 string_newtype!(ChatName, "Human-readable name of a conversation.");
 string_newtype!(SenderId, "Unique identifier for a message sender.");
 string_newtype!(SenderName, "Human-readable name of a message sender.");
@@ -65,6 +72,6 @@ mod tests {
 
         assert_eq!(channel_id.as_str(), "qq-main");
         assert_eq!(chat_id.as_str(), "group-42");
-        assert_eq!(reply_target.into_string(), "target-42");
+        assert_eq!(reply_target.into_inner(), "target-42");
     }
 }

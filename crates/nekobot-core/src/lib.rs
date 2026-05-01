@@ -11,6 +11,7 @@ pub mod channel_registry;
 pub mod config;
 pub mod entity;
 pub mod provider;
+pub mod registry;
 pub mod runtime;
 pub mod session;
 
@@ -136,26 +137,27 @@ impl<S> NekoBot<S> {
     }
 
     async fn init(
-        &mut self,
+        &self,
     ) -> Result<Vec<crate::runtime::channel::ChannelRuntime>, anyhow::Error> {
-        use std::{collections::HashMap, sync::Arc};
-
-        use crate::{
-            agent::AgentSessionConfig,
-            entity::{
-                Entity,
-                channel_chat_agent::ChannelChatAgent,
-                message::Message,
-                sender_gate_state::SenderGateState,
-                session::Session,
-            },
-            runtime::{
-                channel::{ChannelContext, ChannelRuntime},
-                session_gate::SessionGate,
-            },
-        };
-
         self.config.validate()?;
+
+        let conn = self.init_database().await?;
+        let providers = self.init_providers()?;
+        let channels = self.init_channels()?;
+        let agent_configs = self.build_agent_configs(&providers)?;
+        let gate = self.build_gate(&conn);
+
+        Ok(self.build_runtimes(channels, conn, agent_configs, gate))
+    }
+
+    async fn init_database(&self) -> Result<turso::Connection, anyhow::Error> {
+        use crate::entity::{
+            Entity,
+            channel_chat_agent::ChannelChatAgent,
+            message::Message,
+            sender_gate_state::SenderGateState,
+            session::Session,
+        };
 
         let db = turso::Builder::new_local(&self.config.database_path)
             .build()
@@ -166,9 +168,14 @@ impl<S> NekoBot<S> {
         Message::create_table(&conn).await?;
         ChannelChatAgent::create_table(&conn).await?;
         SenderGateState::create_table(&conn).await?;
+        Ok(conn)
+    }
 
-        let providers: HashMap<_, _> = self
-            .config
+    fn init_providers(
+        &self,
+    ) -> Result<std::collections::HashMap<String, std::sync::Arc<dyn provider::Provider>>, anyhow::Error>
+    {
+        self.config
             .providers
             .iter()
             .filter_map(|pc| {
@@ -177,17 +184,24 @@ impl<S> NekoBot<S> {
                     .map(|p| p.map(|p| (pc.name().to_owned(), p)))
                     .transpose()
             })
-            .collect::<Result<_, anyhow::Error>>()?;
+            .collect::<Result<_, anyhow::Error>>()
+    }
 
-        let channels: Vec<Box<dyn Channel>> = self
-            .config
+    fn init_channels(&self) -> Result<Vec<Box<dyn Channel>>, anyhow::Error> {
+        self.config
             .channels
             .iter()
             .filter_map(|cc| self.channel_registry.create(cc).transpose())
-            .collect::<Result<_, anyhow::Error>>()?;
+            .collect::<Result<_, anyhow::Error>>()
+    }
 
-        let agent_configs: Vec<AgentSessionConfig> = self
-            .config
+    fn build_agent_configs(
+        &self,
+        providers: &std::collections::HashMap<String, std::sync::Arc<dyn provider::Provider>>,
+    ) -> Result<Vec<crate::agent::AgentSessionConfig>, anyhow::Error> {
+        use crate::agent::AgentSessionConfig;
+
+        self.config
             .agents
             .iter()
             .map(|agent| {
@@ -196,7 +210,7 @@ impl<S> NekoBot<S> {
                 })?;
                 AgentSessionConfig::from_agent_config(
                     agent,
-                    Arc::clone(provider),
+                    std::sync::Arc::clone(provider),
                     self.config
                         .model_options_for_agent(&agent.name)
                         .cloned()
@@ -204,16 +218,32 @@ impl<S> NekoBot<S> {
                     &self.middleware_registry,
                 )
             })
-            .collect::<Result<_, anyhow::Error>>()?;
+            .collect::<Result<_, anyhow::Error>>()
+    }
 
-        let gate: Option<Arc<SessionGate>> =
-            self.config.password_hash.as_ref().map(|hash| {
-                let valid_agents: Vec<String> =
-                    self.config.agents.iter().map(|a| a.name.clone()).collect();
-                Arc::new(SessionGate::new(hash.clone(), valid_agents, conn.clone()))
-            });
+    fn build_gate(
+        &self,
+        conn: &turso::Connection,
+    ) -> Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>> {
+        use crate::runtime::session_gate::SessionGate;
 
-        Ok(channels
+        self.config.password_hash.as_ref().map(|hash| {
+            let valid_agents: Vec<String> =
+                self.config.agents.iter().map(|a| a.name.clone()).collect();
+            std::sync::Arc::new(SessionGate::new(hash.clone(), valid_agents, conn.clone()))
+        })
+    }
+
+    fn build_runtimes(
+        &self,
+        channels: Vec<Box<dyn Channel>>,
+        conn: turso::Connection,
+        agent_configs: Vec<crate::agent::AgentSessionConfig>,
+        gate: Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>>,
+    ) -> Vec<crate::runtime::channel::ChannelRuntime> {
+        use crate::runtime::channel::{ChannelContext, ChannelRuntime};
+
+        channels
             .into_iter()
             .map(|ch| {
                 let mut rt = ChannelRuntime::new(
@@ -224,21 +254,11 @@ impl<S> NekoBot<S> {
                     agent_configs.clone(),
                 );
                 if let Some(ref g) = gate {
-                    // Each channel needs its own gate with the correct channel_id.
-                    // Since we don't have the ChannelInfo yet (register hasn't been called),
-                    // we use a gate keyed by channel_id provided at construction time.
-                    // The gate's channel_id matches the config's channel app_id.
-                    // Actually we need the ChannelInfo.id from register() which happens
-                    // inside rt.run(). So we can't set it here.
-                    //
-                    // For now: SessionGate::channel_id is set by the gate constructor
-                    // with the actual channel id. We'll need to defer gate creation
-                    // to inside ChannelRuntime::run() after register() returns ChannelInfo.
-                    rt = rt.with_gate(Arc::clone(g));
+                    rt = rt.with_gate(std::sync::Arc::clone(g));
                 }
                 rt
             })
-            .collect())
+            .collect()
     }
 
     /// Validate config, initialize the database, wire up channel runtimes

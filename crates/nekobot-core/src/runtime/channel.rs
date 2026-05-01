@@ -111,7 +111,7 @@ impl ChannelRuntime {
             } => {
                 // C2C gate interception — login / connect before agent.
                 // Only applies to C2C private chats (chat id prefixed with "c2c:").
-                let is_c2c = chat.id.as_str().starts_with("c2c:");
+                let is_c2c = chat.id.is_c2c();
                 let agent_name_override = if is_c2c {
                     if let Some(gate) = &self.gate {
                         match gate
@@ -148,8 +148,8 @@ impl ChannelRuntime {
                 handle
                     .activation_sender
                     .send(AgentActivation::ChannelMessage {
-                        chat_name: chat.name.into_string(),
-                        sender_name: sender.name.into_string(),
+                        chat_name: chat.name.into_inner(),
+                        sender_name: sender.name.into_inner(),
                         content,
                     })
                     .await?;
@@ -286,13 +286,17 @@ impl Runtime for ChannelRuntime {
                     let Some(event) = event else {
                         break;
                     };
-                    self.handle_channel_event(&channel_info, event, output_sender.clone()).await?;
+                    if let Err(e) = self.handle_channel_event(&channel_info, event, output_sender.clone()).await {
+                        tracing::error!(target: "runtime", "channel event error: {e:#}");
+                    }
                 }
                 output = output_receiver.recv() => {
                     let Some(output) = output else {
                         break;
                     };
-                    self.handle_agent_output(output).await?;
+                    if let Err(e) = self.handle_agent_output(output).await {
+                        tracing::error!(target: "runtime", "agent output error: {e:#}");
+                    }
                 }
             }
         }
@@ -397,12 +401,13 @@ mod tests {
                 .chat
                 .messages
                 .last()
-                .map(|message| format!("echo: {}", message.content.content))
+                .map(|message| format!("echo: {}", message.content.text()))
                 .unwrap_or_else(|| "echo".to_owned());
 
             Ok(ChatResponse {
                 content,
                 reasoning_content: None,
+                tool_calls: Vec::new(),
                 images: Vec::new(),
                 usage: None,
             })

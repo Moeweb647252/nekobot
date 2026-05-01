@@ -57,16 +57,68 @@ pub struct Usage {
     pub total_tokens: Option<u64>,
 }
 
-/// The content portion of a chat message.
+/// The content portion of a chat message, typed by role.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChatMessageContent {
-    pub content: String,
-    pub reasoning_content: Option<String>,
-    pub images: Vec<Image>,
-    /// Tool calls from an assistant message.
-    pub tool_calls: Vec<ToolCall>,
-    /// Tool call ID for tool result messages.
-    pub tool_call_id: Option<String>,
+pub enum ChatMessageContent {
+    /// A user message with optional inline images.
+    User {
+        text: String,
+        images: Vec<Image>,
+    },
+    /// An assistant response, optionally with reasoning and tool calls.
+    Assistant {
+        text: String,
+        reasoning: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    },
+    /// A tool execution result.
+    Tool {
+        tool_call_id: String,
+        result: String,
+    },
+}
+
+impl ChatMessageContent {
+    /// Returns the text body regardless of variant.
+    pub fn text(&self) -> &str {
+        match self {
+            ChatMessageContent::User { text, .. }
+            | ChatMessageContent::Assistant { text, .. }
+            | ChatMessageContent::Tool { result: text, .. } => text,
+        }
+    }
+
+    /// Returns the reasoning content, if this is an assistant message.
+    pub fn reasoning(&self) -> Option<&str> {
+        match self {
+            ChatMessageContent::Assistant { reasoning, .. } => reasoning.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns the tool calls, if this is an assistant message.
+    pub fn tool_calls(&self) -> &[ToolCall] {
+        match self {
+            ChatMessageContent::Assistant { tool_calls, .. } => tool_calls,
+            _ => &[],
+        }
+    }
+
+    /// Returns the tool call ID, if this is a tool result message.
+    pub fn tool_call_id(&self) -> Option<&str> {
+        match self {
+            ChatMessageContent::Tool { tool_call_id, .. } => Some(tool_call_id),
+            _ => None,
+        }
+    }
+
+    /// Returns the inline images, if this is a user message.
+    pub fn images(&self) -> &[Image] {
+        match self {
+            ChatMessageContent::User { images, .. } => images,
+            _ => &[],
+        }
+    }
 }
 
 /// A single message in a chat conversation.

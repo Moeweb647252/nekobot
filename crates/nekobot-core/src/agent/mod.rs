@@ -1,9 +1,6 @@
 //! Agent session management, middleware pipeline, tool injection, and provider-based request handling.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use serde_json::Value;
@@ -19,7 +16,8 @@ use crate::{
     config::MiddlewareConfig,
     entity::message::{Message, Role as MessageRole},
     provider::{ModelOptions, Provider, ProviderRequest},
-    session::Session as SessionStore,
+    registry::FactoryRegistry,
+    session::SessionHandle,
 };
 
 pub mod middleware;
@@ -71,14 +69,10 @@ impl Context {
     }
 }
 
-/// Factory function type that creates a middleware instance from its serialized configuration.
-pub type MiddlewareCreateFn =
-    Arc<dyn Fn(&MiddlewareConfig) -> anyhow::Result<Arc<dyn Middleware>> + Send + Sync>;
-
 /// Registry that maps middleware names to factory functions for dynamic instantiation.
 #[derive(Clone, Default)]
 pub struct MiddlewareRegistry {
-    factories: HashMap<String, MiddlewareCreateFn>,
+    inner: FactoryRegistry<MiddlewareConfig, Arc<dyn Middleware>>,
 }
 
 impl MiddlewareRegistry {
@@ -92,22 +86,12 @@ impl MiddlewareRegistry {
     where
         F: Fn(&MiddlewareConfig) -> anyhow::Result<Arc<dyn Middleware>> + Send + Sync + 'static,
     {
-        let name = name.into();
-        if name.trim().is_empty() {
-            anyhow::bail!("middleware factory name cannot be empty");
-        }
-
-        if self.factories.contains_key(&name) {
-            anyhow::bail!("duplicate middleware factory: {name}");
-        }
-
-        self.factories.insert(name, Arc::new(create));
-        Ok(())
+        self.inner.register(name, create)
     }
 
     /// Looks up the factory for the given config's name and creates a middleware instance, returning `None` if not found.
     pub fn create(&self, config: &MiddlewareConfig) -> anyhow::Result<Option<Arc<dyn Middleware>>> {
-        let Some(factory) = self.factories.get(&config.name) else {
+        let Some(factory) = self.inner.get(&config.name) else {
             return Ok(None);
         };
 
@@ -284,40 +268,10 @@ impl AgentSession {
                     return Ok(resp);
                 }
 
-                let provider_request = ProviderRequest {
-                    chat: request.clone(),
-                    options: self.model_options.clone(),
-                };
-                match self.provider.complete(provider_request).await {
-                    Ok(resp) => resp,
-                    Err(error) => {
-                        self.run_error_hooks(
-                            &ctx,
-                            &anyhow::anyhow!("{}", error),
-                            self.middlewares.len(),
-                        )
-                        .await;
-                        return Err(anyhow::anyhow!("{}", error));
-                    }
-                }
+                self.call_provider(&ctx, &request).await?
             } else {
                 // Subsequent iterations: skip before_chat, go straight to provider
-                let provider_request = ProviderRequest {
-                    chat: request.clone(),
-                    options: self.model_options.clone(),
-                };
-                match self.provider.complete(provider_request).await {
-                    Ok(resp) => resp,
-                    Err(error) => {
-                        self.run_error_hooks(
-                            &ctx,
-                            &anyhow::anyhow!("{}", error),
-                            self.middlewares.len(),
-                        )
-                        .await;
-                        return Err(anyhow::anyhow!("{}", error));
-                    }
-                }
+                self.call_provider(&ctx, &request).await?
             };
 
             // No more tool calls → final response
@@ -334,22 +288,23 @@ impl AgentSession {
             // Add assistant message to request
             request.messages.push(ChatMessage {
                 role: Role::Assistant,
-                content: ChatMessageContent {
-                    content: response.content.clone(),
-                    reasoning_content: response.reasoning_content.clone(),
-                    images: Vec::new(),
+                content: ChatMessageContent::Assistant {
+                    text: response.content.clone(),
+                    reasoning: response.reasoning_content.clone(),
                     tool_calls: response.tool_calls.clone(),
-                    tool_call_id: None,
                 },
             });
 
             // Execute tools and add results
             for tc in &response.tool_calls {
-                let tool = ctx.tool_registry().get(&tc.function.name);
+                let tool = ctx.tool_registry().get(&tc.function.name)?;
                 let result = match tool {
                     Some(tool) => {
                         let args: Value =
-                            serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+                            serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
+                                tracing::warn!(target: "agent", "failed to parse tool arguments for {}: {e}", tc.function.name);
+                                Value::Null
+                            });
                         tool.call(args).await
                     }
                     None => Err(ToolError::NotFound(tc.function.name.clone())),
@@ -362,14 +317,30 @@ impl AgentSession {
 
                 request.messages.push(ChatMessage {
                     role: Role::Tool,
-                    content: ChatMessageContent {
-                        content,
-                        reasoning_content: None,
-                        images: Vec::new(),
-                        tool_calls: Vec::new(),
-                        tool_call_id: Some(tc.id.clone()),
+                    content: ChatMessageContent::Tool {
+                        tool_call_id: tc.id.clone(),
+                        result: content,
                     },
                 });
+            }
+        }
+    }
+
+    async fn call_provider(&self, ctx: &Context, request: &ChatRequest) -> anyhow::Result<ChatResponse> {
+        let provider_request = ProviderRequest {
+            chat: request.clone(),
+            options: self.model_options.clone(),
+        };
+        match self.provider.complete(provider_request).await {
+            Ok(resp) => Ok(resp),
+            Err(error) => {
+                self.run_error_hooks(
+                    ctx,
+                    &anyhow::anyhow!("{}", error),
+                    self.middlewares.len(),
+                )
+                .await;
+                Err(anyhow::anyhow!("{}", error))
             }
         }
     }
@@ -433,7 +404,7 @@ impl AgentSession {
         activation: AgentActivation,
         output_sender: &Sender<AgentOutput>,
     ) -> anyhow::Result<()> {
-        let session = SessionStore {
+        let session = SessionHandle {
             session_id: self.session_id,
             app_db: app_db.clone(),
         };
@@ -477,7 +448,7 @@ impl AgentSession {
 
     async fn handle_middleware_event(
         &self,
-        session: &SessionStore,
+        session: &SessionHandle,
         event: MiddlewareEvent,
     ) -> anyhow::Result<bool> {
         match event {
@@ -502,33 +473,36 @@ impl AgentSession {
             .into_iter()
             .map(|message| {
                 let role = chat_role(message.role.clone());
-                let (content_text, tool_calls, tool_call_id) = match &role {
-                    Role::Tool => (message.content, Vec::new(), message.tool_call_id),
+                let content = match &role {
+                    Role::Tool => ChatMessageContent::Tool {
+                        tool_call_id: message.tool_call_id.unwrap_or_default(),
+                        result: message.content,
+                    },
                     Role::Assistant => {
-                        if message.content.starts_with("{\"tool_calls\":") {
-                            if let Ok(stored) = serde_json::from_str::<StoredAssistantContent>(
-                                &message.content,
-                            ) {
-                                (stored.content, stored.tool_calls, None)
+                        let (text, tool_calls) =
+                            if message.content.starts_with("{\"tool_calls\":") {
+                                if let Ok(stored) = serde_json::from_str::<StoredAssistantContent>(
+                                    &message.content,
+                                ) {
+                                    (stored.content, stored.tool_calls)
+                                } else {
+                                    (message.content, Vec::new())
+                                }
                             } else {
-                                (message.content, Vec::new(), None)
-                            }
-                        } else {
-                            (message.content, Vec::new(), None)
+                                (message.content, Vec::new())
+                            };
+                        ChatMessageContent::Assistant {
+                            text,
+                            reasoning: message.reasoning_content,
+                            tool_calls,
                         }
                     }
-                    _ => (message.content, Vec::new(), None),
-                };
-                ChatMessage {
-                    role,
-                    content: ChatMessageContent {
-                        content: content_text,
-                        reasoning_content: message.reasoning_content,
+                    _ => ChatMessageContent::User {
+                        text: message.content,
                         images: Vec::new(),
-                        tool_calls,
-                        tool_call_id,
                     },
-                }
+                };
+                ChatMessage { role, content }
             })
             .collect();
 
@@ -572,7 +546,7 @@ pub struct AgentSessionHandle {
     /// Persistent database identifier for the session.
     pub session_id: i64,
     /// Sender for triggering activations in the background event loop.
-    pub activation_sender: Sender<AgentActivation>,
+    pub(crate) activation_sender: Sender<AgentActivation>,
 }
 
 /// Output produced by an agent session, sent through the output channel to the application layer.
@@ -672,11 +646,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Tool for RegisteredTool {
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             "registered_tool"
         }
 
-        fn description(&self) -> &'static str {
+        fn description(&self) -> &str {
             "registered test tool"
         }
 
@@ -700,6 +674,15 @@ mod tests {
     impl Middleware for RegisterToolMiddleware {
         async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
             ctx.tool_registry().register(Arc::new(RegisteredTool))
+        }
+
+        async fn before_chat(
+            &self,
+            ctx: &Context,
+            request: &mut ChatRequest,
+        ) -> Result<MiddlewareFlow, anyhow::Error> {
+            request.tools.extend(ctx.tool_registry().tool_specs()?);
+            Ok(MiddlewareFlow::Continue)
         }
     }
 
@@ -1006,35 +989,6 @@ mod tests {
         assert_eq!(tools[0].name, "registered_tool");
         assert_eq!(tools[0].description, "registered test tool");
         assert_eq!(tools[0].parameters_schema["type"], "object");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn registered_tools_are_not_injected_when_model_lacks_tools() -> anyhow::Result<()> {
-        let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
-        let captured_tools = Arc::new(Mutex::new(None));
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let agent = AgentSession {
-            agent_name: "Neko".to_owned(),
-            session_id: 1,
-            middlewares: vec![Arc::new(RegisterToolMiddleware)],
-            provider: Arc::new(ToolCapturingProvider {
-                tools: Arc::clone(&captured_tools),
-            }),
-            model_options: ModelOptions::default(),
-            tool_registry: Arc::clone(&tool_registry),
-        };
-        let ctx = Context::new("Neko", 1, event_sender, tool_registry);
-
-        agent.init(&ctx).await?;
-        agent.interact(ctx, ChatRequest::default()).await?;
-
-        let tools = captured_tools
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("provider should receive a request");
-        assert!(tools.is_empty());
         Ok(())
     }
 

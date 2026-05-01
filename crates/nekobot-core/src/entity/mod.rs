@@ -22,3 +22,20 @@ pub(crate) async fn enable_foreign_keys(conn: &Connection) -> anyhow::Result<()>
 pub trait Entity {
     fn create_table(conn: &Connection) -> impl Future<Output = anyhow::Result<()>>;
 }
+
+/// Generates a `collect_rows` method for an entity that has a `from_row` method.
+///
+/// Usage: `collect_rows!(EntityName);`
+macro_rules! collect_rows {
+    ($entity:ident) => {
+        async fn collect_rows(rows: &mut turso::Rows) -> anyhow::Result<Vec<$entity>> {
+            let mut items = Vec::new();
+            while let Some(row) = rows.next().await? {
+                items.push($entity::from_row(&row)?);
+            }
+            Ok(items)
+        }
+    };
+}
+
+pub(crate) use collect_rows;
