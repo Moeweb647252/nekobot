@@ -26,6 +26,7 @@ impl Session {
         role: impl Into<String>,
         content: impl Into<String>,
         reasoning_content: Option<String>,
+        tool_call_id: Option<String>,
     ) -> anyhow::Result<entity::message::Message> {
         Message::create(
             &self.app_db,
@@ -34,6 +35,7 @@ impl Session {
             role,
             content,
             reasoning_content,
+            tool_call_id,
         )
         .await
     }

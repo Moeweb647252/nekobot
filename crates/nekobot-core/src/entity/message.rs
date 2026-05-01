@@ -14,6 +14,8 @@ pub struct Message {
     pub reasoning_content: Option<String>,
     pub role: String,
     pub session_id: i64,
+    /// Tool call ID, used when role is "tool".
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -25,6 +27,7 @@ impl Message {
         role: impl Into<String>,
         content: impl Into<String>,
         reasoning_content: Option<String>,
+        tool_call_id: Option<String>,
     ) -> anyhow::Result<Self> {
         enable_foreign_keys(conn).await?;
 
@@ -33,14 +36,15 @@ impl Message {
         let content = content.into();
 
         conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, reasoning_content)
-                VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO messages (id, session_id, role, content, reasoning_content, tool_call_id)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (
                 id.as_str(),
                 session_id,
                 role.as_str(),
                 content.as_str(),
                 reasoning_content.as_deref(),
+                tool_call_id.as_deref(),
             ),
         )
         .await?;
@@ -51,6 +55,7 @@ impl Message {
             reasoning_content,
             role,
             session_id,
+            tool_call_id,
         })
     }
 
@@ -58,7 +63,7 @@ impl Message {
     pub async fn get(conn: &Connection, id: impl AsRef<str>) -> anyhow::Result<Option<Self>> {
         let mut rows = conn
             .query(
-                "SELECT id, content, reasoning_content, role, session_id
+                "SELECT id, content, reasoning_content, role, session_id, tool_call_id
                     FROM messages WHERE id = ?1",
                 (id.as_ref(),),
             )
@@ -74,7 +79,7 @@ impl Message {
     pub async fn list(conn: &Connection) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
             .query(
-                "SELECT id, content, reasoning_content, role, session_id
+                "SELECT id, content, reasoning_content, role, session_id, tool_call_id
                     FROM messages ORDER BY rowid",
                 (),
             )
@@ -86,7 +91,7 @@ impl Message {
     pub async fn list_by_session(conn: &Connection, session_id: i64) -> anyhow::Result<Vec<Self>> {
         let mut rows = conn
             .query(
-                "SELECT id, content, reasoning_content, role, session_id
+                "SELECT id, content, reasoning_content, role, session_id, tool_call_id
                     FROM messages WHERE session_id = ?1 ORDER BY rowid",
                 (session_id,),
             )
@@ -157,6 +162,7 @@ impl Message {
             reasoning_content: row.get(2)?,
             role: row.get(3)?,
             session_id: row.get(4)?,
+            tool_call_id: row.get(5)?,
         })
     }
 }
@@ -172,6 +178,7 @@ impl Entity for Message {
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     reasoning_content TEXT,
+                    tool_call_id TEXT,
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                 )",
             (),
@@ -229,6 +236,7 @@ mod tests {
             Role::User.to_string(),
             "hello",
             None,
+            None,
         )
         .await?;
         let second = Message::create(
@@ -238,6 +246,7 @@ mod tests {
             Role::Assistant.to_string(),
             "hi",
             Some("short reasoning".to_string()),
+            None,
         )
         .await?;
         let third = Message::create(
@@ -247,6 +256,7 @@ mod tests {
             Role::Custom("tool".to_string()).to_string(),
             "tool output",
             None,
+            Some("call_123".to_string()),
         )
         .await?;
 
@@ -278,6 +288,7 @@ mod tests {
                 reasoning_content: Some("updated reasoning".to_string()),
                 role: "assistant".to_string(),
                 session_id: second_session.id,
+                tool_call_id: None,
             }
         );
         assert_eq!(
@@ -313,6 +324,7 @@ mod tests {
                 Role::User.to_string(),
                 "missing session",
                 None,
+                None,
             )
             .await
             .is_err()
@@ -324,6 +336,7 @@ mod tests {
             session.id,
             Role::User.to_string(),
             "hello",
+            None,
             None,
         )
         .await?;

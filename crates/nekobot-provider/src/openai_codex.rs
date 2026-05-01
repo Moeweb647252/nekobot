@@ -314,6 +314,7 @@ impl Provider for OpenAiCodexProvider {
                             content,
                             reasoning_content: (!reasoning_content.is_empty())
                                 .then_some(reasoning_content),
+                            tool_calls: Vec::new(),
                             images: Vec::new(),
                             usage,
                         });
@@ -371,6 +372,7 @@ fn chat_message_input(message: &ChatMessage) -> Value {
     let (role, content) = match &message.role {
         Role::User => ("user", message.content.content.clone()),
         Role::Assistant => ("assistant", message.content.content.clone()),
+        Role::Tool => ("tool", message.content.content.clone()),
         Role::Custom(role) if role == "system" || role == "developer" => {
             (role.as_str(), message.content.content.clone())
         }
@@ -406,6 +408,7 @@ fn parse_response(response: &Value) -> ChatResponse {
     ChatResponse {
         content,
         reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+        tool_calls: Vec::new(),
         images: Vec::new(),
         usage: parse_usage(response.get("usage")),
     }
@@ -762,6 +765,8 @@ mod tests {
                         content: content.into(),
                         reasoning_content: None,
                         images: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
                     },
                 }],
                 system_prompt: Some("be useful".to_owned()),

@@ -4,7 +4,7 @@ use std::{fmt, time::Duration};
 
 use futures_util::StreamExt;
 use nekobot_core::{
-    agent::types::{ChatMessage, ChatResponse, Role, Usage},
+    agent::types::{ChatMessage, ChatResponse, Role, ToolCall, Usage},
     provider::{Provider, ProviderError, ProviderEvent, ProviderRequest},
 };
 use reqwest::{
@@ -201,7 +201,7 @@ impl Provider for DeepSeekProvider {
             .send()
             .await
             .map_err(map_reqwest_error)?;
-        debug!("received DeepSeek response: {:?}", response);
+        debug!("received DeepSeek response headers: {:?}", response);
 
         if !response.status().is_success() {
             return Err(map_http_error(response).await);
@@ -211,6 +211,7 @@ impl Provider for DeepSeekProvider {
             .json::<Value>()
             .await
             .map_err(|error| ProviderError::Remote(error.to_string()))?;
+        debug!("received DeepSeek response body: {}", response);
 
         if response.get("error").is_some() {
             return Err(ProviderError::Remote(response_error_message(&response)));
@@ -265,6 +266,7 @@ impl Provider for DeepSeekProvider {
                             content,
                             reasoning_content: (!reasoning_content.is_empty())
                                 .then_some(reasoning_content),
+                            tool_calls: Vec::new(),
                             images: Vec::new(),
                             usage,
                         });
@@ -346,19 +348,60 @@ fn chat_messages(request: &nekobot_core::agent::types::ChatRequest) -> Value {
 }
 
 fn chat_message(message: &ChatMessage) -> Value {
-    let (role, content) = match &message.role {
-        Role::User => ("user", message.content.content.clone()),
-        Role::Assistant => ("assistant", message.content.content.clone()),
-        Role::Custom(role) if role == "system" || role == "developer" => {
-            ("system", message.content.content.clone())
+    match &message.role {
+        Role::User => {
+            json!({
+                "role": "user",
+                "content": message.content.content,
+            })
         }
-        Role::Custom(role) => ("user", format!("[{role}] {}", message.content.content)),
-    };
-
-    json!({
-        "role": role,
-        "content": content,
-    })
+        Role::Assistant => {
+            let content = message.content.content.clone();
+            let mut msg = json!({
+                "role": "assistant",
+                "content": content,
+            });
+            if let Some(reasoning) = &message.content.reasoning_content {
+                if !reasoning.is_empty() {
+                    msg["reasoning_content"] = Value::String(reasoning.clone());
+                }
+            }
+            if !message.content.tool_calls.is_empty() {
+                msg["tool_calls"] =
+                    serde_json::to_value(&message.content.tool_calls).unwrap_or_default();
+            }
+            if content.is_empty() && !message.content.tool_calls.is_empty() {
+                msg["content"] = Value::Null;
+            }
+            msg
+        }
+        Role::Tool => {
+            if let Some(tool_call_id) = &message.content.tool_call_id {
+                json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": message.content.content,
+                })
+            } else {
+                json!({
+                    "role": "tool",
+                    "content": message.content.content,
+                })
+            }
+        }
+        Role::Custom(role) if role == "system" || role == "developer" => {
+            json!({
+                "role": "system",
+                "content": message.content.content,
+            })
+        }
+        Role::Custom(role) => {
+            json!({
+                "role": "user",
+                "content": format!("[{role}] {}", message.content.content),
+            })
+        }
+    }
 }
 
 fn parse_response(response: &Value) -> ChatResponse {
@@ -380,9 +423,15 @@ fn parse_response(response: &Value) -> ChatResponse {
         .filter(|content| !content.is_empty())
         .map(ToOwned::to_owned);
 
+    let tool_calls = message
+        .and_then(|message| message.get("tool_calls"))
+        .map(|v| serde_json::from_value::<Vec<ToolCall>>(v.clone()).unwrap_or_default())
+        .unwrap_or_default();
+
     ChatResponse {
         content,
         reasoning_content,
+        tool_calls,
         images: Vec::new(),
         usage: parse_usage(response.get("usage")),
     }
@@ -651,6 +700,8 @@ mod tests {
                         content: content.into(),
                         reasoning_content: None,
                         images: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
                     },
                 }],
                 system_prompt: Some("be useful".to_owned()),
@@ -739,6 +790,8 @@ mod tests {
                     content: "dev rules".to_owned(),
                     reasoning_content: None,
                     images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
                 },
             },
             ChatMessage {
@@ -747,6 +800,8 @@ mod tests {
                     content: "internal note".to_owned(),
                     reasoning_content: None,
                     images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
                 },
             },
         ];

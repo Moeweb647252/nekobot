@@ -6,14 +6,15 @@ use std::{
 };
 
 use anyhow::Context as _;
+use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 use turso::Connection;
 
 use crate::{
     agent::{
         middleware::{AgentActivation, Middleware, MiddlewareEvent, MiddlewareFlow},
-        tool::ToolRegistry,
-        types::{ChatMessage, ChatMessageContent, ChatRequest, ChatResponse, Role},
+        tool::{ToolError, ToolRegistry},
+        types::{ChatMessage, ChatMessageContent, ChatRequest, ChatResponse, Role, ToolCall},
     },
     config::MiddlewareConfig,
     entity::message::{Message, Role as MessageRole},
@@ -246,62 +247,137 @@ impl AgentSession {
         Ok(())
     }
 
-    /// Runs the full middleware pipeline and, if not short-circuited, calls the provider to generate a response.
+    /// Runs the full middleware pipeline with a tool-call loop, calling the provider until
+    /// no tool calls remain or the iteration limit is reached.
     pub async fn interact(
         &self,
         ctx: Context,
         mut request: ChatRequest,
     ) -> anyhow::Result<ChatResponse> {
-        if let Err(error) = self.inject_registered_tool_specs(&ctx, &mut request) {
-            self.run_error_hooks(&ctx, &error, 0).await;
-            return Err(error);
-        }
+        const MAX_TOOL_ITERATIONS: usize = 10;
 
-        for (index, middleware) in self.middlewares.iter().enumerate() {
-            match middleware.before_chat(&ctx, &mut request).await {
-                Ok(MiddlewareFlow::Continue) => {}
-                Ok(MiddlewareFlow::Respond(mut response)) => {
-                    if let Err(error) = self
-                        .run_after_chat_hooks(&ctx, &mut response, index + 1)
-                        .await
-                    {
-                        self.run_error_hooks(&ctx, &error, index + 1).await;
-                        return Err(error);
-                    }
+        let mut first_iteration = true;
+        let mut iteration = 0;
+        loop {
+            iteration += 1;
 
-                    return Ok(response);
-                }
-                Err(error) => {
-                    self.run_error_hooks(&ctx, &error, index + 1).await;
-                    return Err(error);
-                }
-            }
-        }
-
-        let provider_request = ProviderRequest {
-            chat: request,
-            options: self.model_options.clone(),
-        };
-        let mut response = match self.provider.complete(provider_request).await {
-            Ok(response) => response,
-            Err(error) => {
-                let error = anyhow::Error::from(error);
-                self.run_error_hooks(&ctx, &error, self.middlewares.len())
-                    .await;
+            // Inject tools on every iteration (tool list may change)
+            if let Err(error) = self.inject_registered_tool_specs(&ctx, &mut request) {
+                self.run_error_hooks(&ctx, &error, 0).await;
                 return Err(error);
             }
-        };
 
-        if let Err(error) = self
-            .run_after_chat_hooks(&ctx, &mut response, self.middlewares.len())
-            .await
-        {
-            self.run_error_hooks(&ctx, &error, self.middlewares.len())
-                .await;
-            return Err(error);
+            // Run before_chat middleware only on first iteration
+            let mut response = if first_iteration {
+                first_iteration = false;
+                let mut aborted = None;
+                for (index, middleware) in self.middlewares.iter().enumerate() {
+                    match middleware.before_chat(&ctx, &mut request).await {
+                        Ok(MiddlewareFlow::Continue) => {}
+                        Ok(MiddlewareFlow::Respond(resp)) => {
+                            aborted = Some((index, resp));
+                            break;
+                        }
+                        Err(error) => {
+                            self.run_error_hooks(&ctx, &error, index).await;
+                            return Err(error);
+                        }
+                    }
+                }
+                if let Some((idx, resp)) = aborted {
+                    let mut resp = resp;
+                    self.run_after_chat_hooks(&ctx, &mut resp, idx + 1).await;
+                    return Ok(resp);
+                }
+
+                let provider_request = ProviderRequest {
+                    chat: request.clone(),
+                    options: self.model_options.clone(),
+                };
+                match self.provider.complete(provider_request).await {
+                    Ok(resp) => resp,
+                    Err(error) => {
+                        self.run_error_hooks(
+                            &ctx,
+                            &anyhow::anyhow!("{}", error),
+                            self.middlewares.len(),
+                        )
+                        .await;
+                        return Err(anyhow::anyhow!("{}", error));
+                    }
+                }
+            } else {
+                // Subsequent iterations: skip before_chat, go straight to provider
+                let provider_request = ProviderRequest {
+                    chat: request.clone(),
+                    options: self.model_options.clone(),
+                };
+                match self.provider.complete(provider_request).await {
+                    Ok(resp) => resp,
+                    Err(error) => {
+                        self.run_error_hooks(
+                            &ctx,
+                            &anyhow::anyhow!("{}", error),
+                            self.middlewares.len(),
+                        )
+                        .await;
+                        return Err(anyhow::anyhow!("{}", error));
+                    }
+                }
+            };
+
+            // No more tool calls → final response
+            if response.tool_calls.is_empty() {
+                self.run_after_chat_hooks(&ctx, &mut response, 0).await;
+                return Ok(response);
+            }
+
+            // Too many iterations
+            if iteration >= MAX_TOOL_ITERATIONS {
+                return Ok(response);
+            }
+
+            // Add assistant message to request
+            request.messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: ChatMessageContent {
+                    content: response.content.clone(),
+                    reasoning_content: response.reasoning_content.clone(),
+                    images: Vec::new(),
+                    tool_calls: response.tool_calls.clone(),
+                    tool_call_id: None,
+                },
+            });
+
+            // Execute tools and add results
+            for tc in &response.tool_calls {
+                let tool = ctx.tool_registry().get(&tc.function.name);
+                let result = match tool {
+                    Some(tool) => {
+                        let args: Value =
+                            serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+                        tool.call(args).await
+                    }
+                    None => Err(ToolError::NotFound(tc.function.name.clone())),
+                };
+
+                let content = match result {
+                    Ok(val) => val.to_string(),
+                    Err(e) => format!("Error: {e}"),
+                };
+
+                request.messages.push(ChatMessage {
+                    role: Role::Tool,
+                    content: ChatMessageContent {
+                        content,
+                        reasoning_content: None,
+                        images: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: Some(tc.id.clone()),
+                    },
+                });
+            }
         }
-
-        Ok(response)
     }
 
     fn inject_registered_tool_specs(
@@ -395,7 +471,7 @@ impl AgentSession {
         let should_interact = match activation {
             AgentActivation::ChannelMessage { content, .. } => {
                 session
-                    .add_message(MessageRole::User.to_string(), content, None)
+                    .add_message(MessageRole::User.to_string(), content, None, None)
                     .await?;
                 true
             }
@@ -415,6 +491,7 @@ impl AgentSession {
                 MessageRole::Assistant.to_string(),
                 response.content.clone(),
                 response.reasoning_content.clone(),
+                None,
             )
             .await?;
 
@@ -440,6 +517,7 @@ impl AgentSession {
                         MessageRole::Custom("internal".to_owned()).to_string(),
                         prompt,
                         None,
+                        None,
                     )
                     .await?;
                 Ok(true)
@@ -452,13 +530,35 @@ impl AgentSession {
         let messages = Message::list_by_session(app_db, self.session_id)
             .await?
             .into_iter()
-            .map(|message| ChatMessage {
-                role: chat_role(message.role),
-                content: ChatMessageContent {
-                    content: message.content,
-                    reasoning_content: message.reasoning_content,
-                    images: Vec::new(),
-                },
+            .map(|message| {
+                let role = chat_role(message.role.clone());
+                let (content_text, tool_calls, tool_call_id) = match &role {
+                    Role::Tool => (message.content, Vec::new(), message.tool_call_id),
+                    Role::Assistant => {
+                        if message.content.starts_with("{\"tool_calls\":") {
+                            if let Ok(stored) = serde_json::from_str::<StoredAssistantContent>(
+                                &message.content,
+                            ) {
+                                (stored.content, stored.tool_calls, None)
+                            } else {
+                                (message.content, Vec::new(), None)
+                            }
+                        } else {
+                            (message.content, Vec::new(), None)
+                        }
+                    }
+                    _ => (message.content, Vec::new(), None),
+                };
+                ChatMessage {
+                    role,
+                    content: ChatMessageContent {
+                        content: content_text,
+                        reasoning_content: message.reasoning_content,
+                        images: Vec::new(),
+                        tool_calls,
+                        tool_call_id,
+                    },
+                }
             })
             .collect();
 
@@ -469,17 +569,19 @@ impl AgentSession {
         })
     }
 
+    /// Runs after_chat hooks on middlewares that ran before the response.
+    /// Errors are logged rather than propagated.
     async fn run_after_chat_hooks(
         &self,
         ctx: &Context,
         response: &mut ChatResponse,
-        applied_middleware_count: usize,
-    ) -> anyhow::Result<()> {
-        for middleware in self.middlewares[..applied_middleware_count].iter().rev() {
-            middleware.after_chat(ctx, response).await?;
+        start: usize,
+    ) {
+        for middleware in self.middlewares[..start].iter().rev() {
+            if let Err(error) = middleware.after_chat(ctx, response).await {
+                tracing::error!(target: "agent", "after_chat error in {}: {error:#}", middleware.name());
+            }
         }
-
-        Ok(())
     }
 
     async fn run_error_hooks(
@@ -510,10 +612,20 @@ pub enum AgentOutput {
     SendMessage { session_id: i64, content: String },
 }
 
+/// Helper for deserializing assistant message content that may contain embedded tool calls.
+#[derive(serde::Deserialize)]
+struct StoredAssistantContent {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    tool_calls: Vec<ToolCall>,
+}
+
 fn chat_role(role: String) -> Role {
     match role.as_str() {
         "user" => Role::User,
         "assistant" => Role::Assistant,
+        "tool" => Role::Tool,
         _ => Role::Custom(role),
     }
 }
@@ -1060,6 +1172,7 @@ mod tests {
         ChatResponse {
             content: content.into(),
             reasoning_content: None,
+            tool_calls: Vec::new(),
             images: Vec::new(),
             usage: None,
         }

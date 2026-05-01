@@ -2,6 +2,7 @@
 
 use std::fmt::Display;
 
+use serde::{Deserialize, Serialize};
 use crate::agent::tool::ToolSpec;
 
 /// The role of a chat message participant.
@@ -9,6 +10,8 @@ use crate::agent::tool::ToolSpec;
 pub enum Role {
     User,
     Assistant,
+    /// Tool call result from tool execution.
+    Tool,
     /// Provider-specific role name (e.g. "system", "developer").
     Custom(String),
 }
@@ -18,9 +21,25 @@ impl Display for Role {
         match self {
             Role::User => write!(f, "user"),
             Role::Assistant => write!(f, "assistant"),
+            Role::Tool => write!(f, "tool"),
             Role::Custom(s) => write!(f, "{}", s),
         }
     }
+}
+
+/// A single tool call from an LLM response.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub function: ToolCallFunction,
 }
 
 /// An image attachment with inline binary data and MIME type.
@@ -44,6 +63,10 @@ pub struct ChatMessageContent {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub images: Vec<Image>,
+    /// Tool calls from an assistant message.
+    pub tool_calls: Vec<ToolCall>,
+    /// Tool call ID for tool result messages.
+    pub tool_call_id: Option<String>,
 }
 
 /// A single message in a chat conversation.
@@ -66,6 +89,8 @@ pub struct ChatRequest {
 pub struct ChatResponse {
     pub content: String,
     pub reasoning_content: Option<String>,
+    /// Tool calls requested by the LLM.
+    pub tool_calls: Vec<ToolCall>,
     pub images: Vec<Image>,
     pub usage: Option<Usage>,
 }
