@@ -101,7 +101,7 @@ impl SkillMiddleware {
 #[async_trait::async_trait]
 impl Middleware for SkillMiddleware {
     fn name(&self) -> &'static str {
-        "skill"
+        "skills"
     }
 
     async fn before_chat(

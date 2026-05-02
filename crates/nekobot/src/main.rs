@@ -76,12 +76,12 @@ async fn main() {
 
     // Register skill middleware factory (Agent Skills support)
     bot.middleware_registry_mut()
-        .register("skill", |config| {
-            let cfg: nekobot_skill::SkillConfig = serde_json::from_value(
+        .register("skills", |config| {
+            let cfg: nekobot_skills::SkillConfig = serde_json::from_value(
                 serde_json::Value::Object(config.data.clone()),
             )?;
             Ok(std::sync::Arc::new(
-                nekobot_skill::SkillMiddleware::from_config(cfg)?,
+                nekobot_skills::SkillMiddleware::from_config(cfg)?,
             ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
         })
         .expect("Failed to register skill middleware");

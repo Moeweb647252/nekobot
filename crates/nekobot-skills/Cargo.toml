@@ -1,5 +1,5 @@
 [package]
-name = "nekobot-skill"
+name = "nekobot-skills"
 version = "0.1.0"
 edition = "2024"
 

@@ -1840,7 +1840,7 @@ dependencies = [
  "nekobot-mcp",
  "nekobot-provider",
  "nekobot-script",
- "nekobot-skill",
+ "nekobot-skills",
  "serde_json",
  "serde_yml",
  "tokio",
@@ -1927,7 +1927,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nekobot-skill"
+name = "nekobot-skills"
 version = "0.1.0"
 dependencies = [
  "anyhow",
