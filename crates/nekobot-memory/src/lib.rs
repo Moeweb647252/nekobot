@@ -27,7 +27,9 @@ pub struct MemoryConfig {
     pub max_results: usize,
 }
 
-fn default_max_results() -> usize { 5 }
+fn default_max_results() -> usize {
+    5
+}
 
 pub struct MemoryMiddleware {
     config: MemoryConfig,
@@ -63,14 +65,18 @@ impl MemoryMiddleware {
 
 #[async_trait::async_trait]
 impl Middleware for MemoryMiddleware {
-    fn name(&self) -> &'static str { "memory" }
+    fn name(&self) -> &'static str {
+        "memory"
+    }
 
     async fn before_chat(
         &self,
         _ctx: &Context,
         request: &mut ChatRequest,
     ) -> Result<MiddlewareFlow, anyhow::Error> {
-        let specs = self.tool_specs.read()
+        let specs = self
+            .tool_specs
+            .read()
             .map_err(|e| anyhow::anyhow!("memory lock poisoned: {e}"))?;
         request.tools.extend(specs.iter().cloned());
         Ok(MiddlewareFlow::Continue)
@@ -80,18 +86,39 @@ impl Middleware for MemoryMiddleware {
         let conn = ctx.app_db.clone();
         entity::create_table(&conn).await?;
 
-        *self.app_db.write().map_err(|e| anyhow::anyhow!("memory lock: {e}"))? = Some(conn);
+        *self
+            .app_db
+            .write()
+            .map_err(|e| anyhow::anyhow!("memory lock: {e}"))? = Some(conn);
 
         let ec = self.embed_client();
         let db = self.conn()?;
 
-        let remember = Arc::new(RememberTool { app_db: db.clone(), embed_client: ec.clone(), max_results: self.config.max_results });
-        let search = Arc::new(SearchMemoryTool { app_db: db.clone(), embed_client: ec.clone(), max_results: self.config.max_results });
-        let forget = Arc::new(ForgetTool { app_db: db, embed_client: ec, max_results: self.config.max_results });
+        let remember = Arc::new(RememberTool {
+            app_db: db.clone(),
+            embed_client: ec.clone(),
+            max_results: self.config.max_results,
+        });
+        let search = Arc::new(SearchMemoryTool {
+            app_db: db.clone(),
+            embed_client: ec.clone(),
+            max_results: self.config.max_results,
+        });
+        let forget = Arc::new(ForgetTool {
+            app_db: db,
+            embed_client: ec,
+            max_results: self.config.max_results,
+        });
 
-        let mut specs = self.tool_specs.write()
+        let mut specs = self
+            .tool_specs
+            .write()
             .map_err(|e| anyhow::anyhow!("memory lock: {e}"))?;
-        for tool in [remember.as_ref() as &dyn Tool, search.as_ref(), forget.as_ref()] {
+        for tool in [
+            remember.as_ref() as &dyn Tool,
+            search.as_ref(),
+            forget.as_ref(),
+        ] {
             specs.push(ToolSpec {
                 name: tool.name().to_owned(),
                 description: tool.description().to_owned(),
@@ -118,7 +145,9 @@ struct RememberTool {
 
 #[async_trait::async_trait]
 impl Tool for RememberTool {
-    fn name(&self) -> &str { "remember" }
+    fn name(&self) -> &str {
+        "remember"
+    }
     fn description(&self) -> &str {
         "Store a new memory. The content will be embedded and saved. \
          If a very similar memory already exists, it will not be duplicated."
@@ -133,20 +162,30 @@ impl Tool for RememberTool {
         })
     }
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let content = args.get("content").and_then(Value::as_str)
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArguments("missing 'content'".to_owned()))?;
 
-        let embedding = self.embed_client.embed(content).await
+        let embedding = self
+            .embed_client
+            .embed(content)
+            .await
             .map_err(|e| ToolError::Execution(format!("embed: {e}")))?;
 
         // Dedup check
-        let existing = entity::search(&self.app_db, "", &embedding, 1).await
+        let existing = entity::search(&self.app_db, "", &embedding, 1)
+            .await
             .map_err(|e| ToolError::Execution(format!("search: {e}")))?;
         if let Some(row) = existing.first() {
-            return Ok(Value::String(format!("Similar memory already exists: \"{}\"", row.content)));
+            return Ok(Value::String(format!(
+                "Similar memory already exists: \"{}\"",
+                row.content
+            )));
         }
 
-        entity::insert(&self.app_db, "", content, &embedding).await
+        entity::insert(&self.app_db, "", content, &embedding)
+            .await
             .map_err(|e| ToolError::Execution(format!("insert: {e}")))?;
 
         Ok(Value::String(format!("Remembered: \"{content}\"")))
@@ -162,7 +201,9 @@ struct SearchMemoryTool {
 
 #[async_trait::async_trait]
 impl Tool for SearchMemoryTool {
-    fn name(&self) -> &str { "search_memory" }
+    fn name(&self) -> &str {
+        "search_memory"
+    }
     fn description(&self) -> &str {
         "Search stored memories by semantic similarity."
     }
@@ -176,16 +217,23 @@ impl Tool for SearchMemoryTool {
         })
     }
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let query = args.get("query").and_then(Value::as_str)
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArguments("missing 'query'".to_owned()))?;
 
-        let embedding = self.embed_client.embed(query).await
+        let embedding = self
+            .embed_client
+            .embed(query)
+            .await
             .map_err(|e| ToolError::Execution(format!("embed: {e}")))?;
 
-        let results = entity::search(&self.app_db, "", &embedding, self.max_results).await
+        let results = entity::search(&self.app_db, "", &embedding, self.max_results)
+            .await
             .map_err(|e| ToolError::Execution(format!("search: {e}")))?;
 
-        let items: Vec<Value> = results.iter()
+        let items: Vec<Value> = results
+            .iter()
             .map(|r| serde_json::json!({"id": r.id, "content": r.content}))
             .collect();
         Ok(Value::Array(items))
@@ -201,7 +249,9 @@ struct ForgetTool {
 
 #[async_trait::async_trait]
 impl Tool for ForgetTool {
-    fn name(&self) -> &str { "forget" }
+    fn name(&self) -> &str {
+        "forget"
+    }
     fn description(&self) -> &str {
         "Forget a memory. Searches for the most similar match and deletes it."
     }
@@ -215,20 +265,27 @@ impl Tool for ForgetTool {
         })
     }
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let content = args.get("content").and_then(Value::as_str)
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArguments("missing 'content'".to_owned()))?;
 
-        let embedding = self.embed_client.embed(content).await
+        let embedding = self
+            .embed_client
+            .embed(content)
+            .await
             .map_err(|e| ToolError::Execution(format!("embed: {e}")))?;
 
-        let results = entity::search(&self.app_db, "", &embedding, 1).await
+        let results = entity::search(&self.app_db, "", &embedding, 1)
+            .await
             .map_err(|e| ToolError::Execution(format!("search: {e}")))?;
 
         let Some(row) = results.first() else {
             return Ok(Value::String("No matching memory found.".to_owned()));
         };
 
-        entity::delete(&self.app_db, row.id).await
+        entity::delete(&self.app_db, row.id)
+            .await
             .map_err(|e| ToolError::Execution(format!("delete: {e}")))?;
 
         Ok(Value::String(format!("Forgot: \"{}\"", row.content)))
@@ -245,7 +302,8 @@ mod tests {
             "embedding_url": "https://api.example.com/embeddings",
             "embedding_key": "sk-test",
             "embedding_model": "test-model",
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(cfg.max_results, 5);
     }
 }

@@ -21,8 +21,7 @@ use rmcp::{
     model::{CallToolRequestParams, PaginatedRequestParams},
     service::{Peer, RoleClient, serve_client},
     transport::{
-        child_process::TokioChildProcess,
-        streamable_http_client::StreamableHttpClientTransport,
+        child_process::TokioChildProcess, streamable_http_client::StreamableHttpClientTransport,
     },
 };
 use serde::Deserialize;
@@ -108,109 +107,111 @@ impl Middleware for McpMiddleware {
         _ctx: &Context,
         request: &mut ChatRequest,
     ) -> Result<MiddlewareFlow, anyhow::Error> {
-        let specs = self.tool_specs.read().map_err(|e| {
-            anyhow::anyhow!("MCP tool_specs lock poisoned: {e}")
-        })?;
+        let specs = self
+            .tool_specs
+            .read()
+            .map_err(|e| anyhow::anyhow!("MCP tool_specs lock poisoned: {e}"))?;
         request.tools.extend(specs.iter().cloned());
         Ok(MiddlewareFlow::Continue)
     }
 
     async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
         debug!("connecting to MCP server {}", self.name());
-        let (server, peer) =
-            match &self.config {
-                McpConfig::Http { server, url } => {
-                    let transport = StreamableHttpClientTransport::from_uri(url.as_str());
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let task = tokio::spawn(async move {
-                        match serve_client(EmptyHandler, transport).await {
-                            Ok(running) => {
-                                let peer = running.peer().clone();
-                                let _ = tx.send(Ok(peer));
-                                // Keep the connection alive indefinitely
-                                std::future::pending::<()>().await;
-                                drop(running);
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(e));
-                            }
+        let (server, peer) = match &self.config {
+            McpConfig::Http { server, url } => {
+                let transport = StreamableHttpClientTransport::from_uri(url.as_str());
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let task = tokio::spawn(async move {
+                    match serve_client(EmptyHandler, transport).await {
+                        Ok(running) => {
+                            let peer = running.peer().clone();
+                            let _ = tx.send(Ok(peer));
+                            // Keep the connection alive indefinitely
+                            std::future::pending::<()>().await;
+                            drop(running);
                         }
-                    });
-                    self._tasks.lock().map_err(|e| {
-                        anyhow::anyhow!("MCP task lock poisoned: {e}")
-                    })?.push(task.abort_handle());
-
-                    let peer = tokio::time::timeout(Duration::from_secs(30), rx)
-                        .await
-                        .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server: {url}"))?
-                        .map_err(|_| anyhow::anyhow!("MCP task panicked"))?
-                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?;
-                    (server.as_str(), peer)
-                }
-                McpConfig::Stdio {
-                    server,
-                    command,
-                    args,
-                } => {
-                    let mut cmd = tokio::process::Command::new(command);
-                    cmd.args(args);
-                    // New process group so the child doesn't receive Ctrl+C
-                    #[cfg(unix)]
-                    cmd.process_group(0);
-
-                    let builder = TokioChildProcess::builder(cmd)
-                        .stderr(std::process::Stdio::piped());
-                    let (transport, stderr) = builder
-                        .spawn()
-                        .map_err(|e| anyhow::anyhow!("failed to spawn MCP child process: {e}"))?;
-
-                    // Drain stderr in the background so the child doesn't block
-                    if let Some(stderr) = stderr {
-                        use tokio::io::AsyncBufReadExt;
-                        tokio::spawn(async move {
-                            let reader = tokio::io::BufReader::new(stderr);
-                            let mut lines = reader.lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
-                                tracing::debug!(target: "mcp.stdio", "{line}");
-                            }
-                        });
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                        }
                     }
+                });
+                self._tasks
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("MCP task lock poisoned: {e}"))?
+                    .push(task.abort_handle());
 
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let task = tokio::spawn(async move {
-                        match serve_client(EmptyHandler, transport).await {
-                            Ok(running) => {
-                                let peer = running.peer().clone();
-                                let _ = tx.send(Ok(peer));
-                                std::future::pending::<()>().await;
-                                drop(running);
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(e));
-                            }
+                let peer = tokio::time::timeout(Duration::from_secs(30), rx)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server: {url}"))?
+                    .map_err(|_| anyhow::anyhow!("MCP task panicked"))?
+                    .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?;
+                (server.as_str(), peer)
+            }
+            McpConfig::Stdio {
+                server,
+                command,
+                args,
+            } => {
+                let mut cmd = tokio::process::Command::new(command);
+                cmd.args(args);
+                // New process group so the child doesn't receive Ctrl+C
+                #[cfg(unix)]
+                cmd.process_group(0);
+
+                let builder = TokioChildProcess::builder(cmd).stderr(std::process::Stdio::piped());
+                let (transport, stderr) = builder
+                    .spawn()
+                    .map_err(|e| anyhow::anyhow!("failed to spawn MCP child process: {e}"))?;
+
+                // Drain stderr in the background so the child doesn't block
+                if let Some(stderr) = stderr {
+                    use tokio::io::AsyncBufReadExt;
+                    tokio::spawn(async move {
+                        let reader = tokio::io::BufReader::new(stderr);
+                        let mut lines = reader.lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            tracing::debug!(target: "mcp.stdio", "{line}");
                         }
                     });
-                    self._tasks.lock().map_err(|e| {
-                        anyhow::anyhow!("MCP task lock poisoned: {e}")
-                    })?.push(task.abort_handle());
-
-                    let peer = tokio::time::timeout(Duration::from_secs(30), rx)
-                        .await
-                        .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server"))?
-                        .map_err(|_| anyhow::anyhow!("MCP task panicked"))?
-                        .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?;
-                    (server.as_str(), peer)
                 }
-            };
+
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let task = tokio::spawn(async move {
+                    match serve_client(EmptyHandler, transport).await {
+                        Ok(running) => {
+                            let peer = running.peer().clone();
+                            let _ = tx.send(Ok(peer));
+                            std::future::pending::<()>().await;
+                            drop(running);
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                        }
+                    }
+                });
+                self._tasks
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("MCP task lock poisoned: {e}"))?
+                    .push(task.abort_handle());
+
+                let peer = tokio::time::timeout(Duration::from_secs(30), rx)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("timeout connecting to MCP server"))?
+                    .map_err(|_| anyhow::anyhow!("MCP task panicked"))?
+                    .map_err(|e| anyhow::anyhow!("failed to connect to MCP server: {e}"))?;
+                (server.as_str(), peer)
+            }
+        };
 
         let tools = peer
             .list_tools(Some(PaginatedRequestParams::default()))
             .await
             .map_err(|e| anyhow::anyhow!("failed to list MCP tools: {e}"))?;
 
-        let mut specs = self.tool_specs.write().map_err(|e| {
-            anyhow::anyhow!("MCP tool_specs lock poisoned: {e}")
-        })?;
+        let mut specs = self
+            .tool_specs
+            .write()
+            .map_err(|e| anyhow::anyhow!("MCP tool_specs lock poisoned: {e}"))?;
 
         for tool in tools.tools {
             let key = format!("mcp_{server}_{}", tool.name);

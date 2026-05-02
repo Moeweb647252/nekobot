@@ -11,8 +11,7 @@
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -27,9 +26,8 @@ async fn main() {
     let mut bot = nekobot_core::NekoBot::new(config);
 
     // Register concrete channel implementations
-    bot.channel_registry_mut().register(
-        "QQ",
-        |cfg| match cfg {
+    bot.channel_registry_mut()
+        .register("QQ", |cfg| match cfg {
             nekobot_core::config::ChannelConfig::QQ {
                 name,
                 app_id,
@@ -40,9 +38,8 @@ async fn main() {
                 app_id.clone(),
                 client_secret.clone(),
             )) as Box<dyn nekobot_channel::Channel>),
-        },
-    )
-    .expect("Failed to register QQ channel");
+        })
+        .expect("Failed to register QQ channel");
 
     // Register concrete provider implementations
     nekobot_provider::register_providers(bot.provider_registry_mut())
@@ -52,72 +49,75 @@ async fn main() {
     bot.middleware_registry_mut()
         .register("mcp", |config| {
             tracing::info!(target: "mcp", "creating MCP middleware from data: {:?}", config.data);
-            let mcp: nekobot_mcp::McpConfig = serde_json::from_value(
-                serde_json::Value::Object(config.data.clone()),
-            )
+            let mcp: nekobot_mcp::McpConfig = serde_json::from_value(serde_json::Value::Object(
+                config.data.clone(),
+            ))
             .map_err(|e| {
                 tracing::error!(target: "mcp", "failed to parse MCP config: {e}");
                 anyhow::anyhow!("failed to parse MCP config: {e}")
             })?;
-            Ok(std::sync::Arc::new(nekobot_mcp::McpMiddleware::from_config(mcp))
-                as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+            Ok(
+                std::sync::Arc::new(nekobot_mcp::McpMiddleware::from_config(mcp))
+                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
+            )
         })
         .expect("Failed to register MCP middleware");
 
     // Register script middleware factory (eval_ts tool)
     bot.middleware_registry_mut()
         .register("script", |config| {
-            let cfg: nekobot_script::ScriptConfig = serde_json::from_value(
-                serde_json::Value::Object(config.data.clone()),
-            )?;
-            Ok(std::sync::Arc::new(
-                nekobot_script::ScriptMiddleware::from_config(cfg),
-            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+            let cfg: nekobot_script::ScriptConfig =
+                serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
+            Ok(
+                std::sync::Arc::new(nekobot_script::ScriptMiddleware::from_config(cfg))
+                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
+            )
         })
         .expect("Failed to register script middleware");
 
     // Register skill middleware factory (Agent Skills support)
     bot.middleware_registry_mut()
         .register("skills", |config| {
-            let cfg: nekobot_skills::SkillConfig = serde_json::from_value(
-                serde_json::Value::Object(config.data.clone()),
-            )?;
-            Ok(std::sync::Arc::new(
-                nekobot_skills::SkillMiddleware::from_config(cfg)?,
-            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+            let cfg: nekobot_skills::SkillConfig =
+                serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
+            Ok(
+                std::sync::Arc::new(nekobot_skills::SkillMiddleware::from_config(cfg)?)
+                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
+            )
         })
         .expect("Failed to register skill middleware");
 
     // Register built-in tools middleware (bash, current_time)
     bot.middleware_registry_mut()
         .register("tools", |config| {
-            let cfg: nekobot_tools::ToolsConfig = serde_json::from_value(
-                serde_json::Value::Object(config.data.clone()),
-            )?;
-            Ok(std::sync::Arc::new(
-                nekobot_tools::ToolsMiddleware::from_config(cfg),
-            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+            let cfg: nekobot_tools::ToolsConfig =
+                serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
+            Ok(
+                std::sync::Arc::new(nekobot_tools::ToolsMiddleware::from_config(cfg))
+                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
+            )
         })
         .expect("Failed to register tools middleware");
 
     // Register memory middleware (semantic memory)
     bot.middleware_registry_mut()
         .register("memory", |config| {
-            let cfg: nekobot_memory::MemoryConfig = serde_json::from_value(
-                serde_json::Value::Object(config.data.clone()),
-            )?;
-            Ok(std::sync::Arc::new(
-                nekobot_memory::MemoryMiddleware::from_config(cfg),
-            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+            let cfg: nekobot_memory::MemoryConfig =
+                serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
+            Ok(
+                std::sync::Arc::new(nekobot_memory::MemoryMiddleware::from_config(cfg))
+                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
+            )
         })
         .expect("Failed to register memory middleware");
 
     // Register persona middleware (persistent agent personality)
     bot.middleware_registry_mut()
         .register("persona", |_config| {
-            Ok(std::sync::Arc::new(
-                nekobot_persona::PersonaMiddleware::new(),
-            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+            Ok(
+                std::sync::Arc::new(nekobot_persona::PersonaMiddleware::new())
+                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
+            )
         })
         .expect("Failed to register persona middleware");
 

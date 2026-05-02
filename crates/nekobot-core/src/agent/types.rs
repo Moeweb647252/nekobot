@@ -2,8 +2,8 @@
 
 use std::fmt::Display;
 
-use serde::{Deserialize, Serialize};
 use crate::agent::tool::ToolSpec;
+use serde::{Deserialize, Serialize};
 
 /// The role of a chat message participant.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,10 +61,7 @@ pub struct Usage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatMessageContent {
     /// A user message with optional inline images.
-    User {
-        text: String,
-        images: Vec<Image>,
-    },
+    User { text: String, images: Vec<Image> },
     /// An assistant response, optionally with reasoning and tool calls.
     Assistant {
         text: String,

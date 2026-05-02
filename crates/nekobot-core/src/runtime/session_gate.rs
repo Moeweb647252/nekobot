@@ -128,7 +128,10 @@ impl SessionGate {
     ) -> anyhow::Result<InterceptResult> {
         if !self.valid_agents.iter().any(|a| a == agent) {
             return Ok(InterceptResult::Reject {
-                reply: format!("未知 agent: {agent}，可用: {}", self.valid_agents.join(", ")),
+                reply: format!(
+                    "未知 agent: {agent}，可用: {}",
+                    self.valid_agents.join(", ")
+                ),
             });
         }
 

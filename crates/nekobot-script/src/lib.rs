@@ -78,9 +78,10 @@ impl Middleware for ScriptMiddleware {
             parameters_schema: tool.parameters_schema(),
         };
 
-        self.tool_specs.write().map_err(|e| {
-            anyhow::anyhow!("script tool_specs lock poisoned: {e}")
-        })?.push(spec);
+        self.tool_specs
+            .write()
+            .map_err(|e| anyhow::anyhow!("script tool_specs lock poisoned: {e}"))?
+            .push(spec);
 
         ctx.tool_registry().register(tool)?;
         Ok(())
@@ -123,9 +124,8 @@ impl Tool for EvalTsTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArguments("missing 'code' parameter".to_owned()))?;
 
-        let js_code = ts_check::transpile(code).map_err(|e| {
-            ToolError::Execution(format!("TypeScript error: {e}"))
-        })?;
+        let js_code = ts_check::transpile(code)
+            .map_err(|e| ToolError::Execution(format!("TypeScript error: {e}")))?;
 
         // TODO: use timeout_ms with a spawned task + timeout wrapper
         let _ = self.timeout_ms;
@@ -157,8 +157,8 @@ mod tests {
 
     #[test]
     fn transpile_rejects_any_in_function() {
-        let err =
-            ts_check::transpile("function f(x: any): any { return x; }").expect_err("should reject any");
+        let err = ts_check::transpile("function f(x: any): any { return x; }")
+            .expect_err("should reject any");
         assert!(err.to_string().contains("`any` type is not allowed"));
     }
 

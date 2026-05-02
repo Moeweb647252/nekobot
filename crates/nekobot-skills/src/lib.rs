@@ -71,7 +71,9 @@ impl SkillMiddleware {
             for skill in &self.catalog {
                 prompt.push_str(&format!("- {}: {}\n", skill.name, skill.description));
             }
-            prompt.push_str("\nTo activate a skill, call the `use_skill` tool with the skill name.\n");
+            prompt.push_str(
+                "\nTo activate a skill, call the `use_skill` tool with the skill name.\n",
+            );
         }
 
         // Append activated skill bodies
@@ -137,10 +139,14 @@ impl Middleware for SkillMiddleware {
             activated: Arc::clone(&self.activated),
         });
 
-        let mut specs = self.tool_specs.write().map_err(|e| {
-            anyhow::anyhow!("skill tool_specs lock poisoned: {e}")
-        })?;
-        for tool in [use_tool.as_ref() as &dyn Tool, deactivate_tool.as_ref() as &dyn Tool] {
+        let mut specs = self
+            .tool_specs
+            .write()
+            .map_err(|e| anyhow::anyhow!("skill tool_specs lock poisoned: {e}"))?;
+        for tool in [
+            use_tool.as_ref() as &dyn Tool,
+            deactivate_tool.as_ref() as &dyn Tool,
+        ] {
             specs.push(ToolSpec {
                 name: tool.name().to_owned(),
                 description: tool.description().to_owned(),
@@ -187,14 +193,11 @@ impl Tool for UseSkillTool {
     }
 
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let name = args
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                nekobot_core::agent::tool::ToolError::InvalidArguments(
-                    "missing 'name' parameter".to_owned(),
-                )
-            })?;
+        let name = args.get("name").and_then(Value::as_str).ok_or_else(|| {
+            nekobot_core::agent::tool::ToolError::InvalidArguments(
+                "missing 'name' parameter".to_owned(),
+            )
+        })?;
 
         if !self.names.iter().any(|n| n == name) {
             return Err(nekobot_core::agent::tool::ToolError::Execution(format!(
@@ -248,27 +251,20 @@ impl Tool for DeactivateSkillTool {
     }
 
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let name = args
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                nekobot_core::agent::tool::ToolError::InvalidArguments(
-                    "missing 'name' parameter".to_owned(),
-                )
-            })?;
+        let name = args.get("name").and_then(Value::as_str).ok_or_else(|| {
+            nekobot_core::agent::tool::ToolError::InvalidArguments(
+                "missing 'name' parameter".to_owned(),
+            )
+        })?;
 
         let mut activated = self.activated.write().map_err(|e| {
             nekobot_core::agent::tool::ToolError::Execution(format!("lock poisoned: {e}"))
         })?;
 
         if activated.remove(name) {
-            Ok(Value::String(format!(
-                "Skill '{name}' deactivated."
-            )))
+            Ok(Value::String(format!("Skill '{name}' deactivated.")))
         } else {
-            Ok(Value::String(format!(
-                "Skill '{name}' was not active."
-            )))
+            Ok(Value::String(format!("Skill '{name}' was not active.")))
         }
     }
 }
@@ -280,9 +276,7 @@ mod tests {
     fn write_skill(dir: &std::path::Path, name: &str, description: &str, body: &str) {
         let skill_dir = dir.join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
-        let content = format!(
-            "---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
-        );
+        let content = format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n");
         std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
     }
 
@@ -296,8 +290,18 @@ mod tests {
     #[test]
     fn middleware_builds_system_prompt_with_catalog() {
         let dir = tempfile::tempdir().unwrap();
-        write_skill(dir.path(), "greeter", "Say hello", "# Greetings\nBe friendly.");
-        write_skill(dir.path(), "analyzer", "Analyze data", "# Analysis\nUse statistics.");
+        write_skill(
+            dir.path(),
+            "greeter",
+            "Say hello",
+            "# Greetings\nBe friendly.",
+        );
+        write_skill(
+            dir.path(),
+            "analyzer",
+            "Analyze data",
+            "# Analysis\nUse statistics.",
+        );
 
         let mw = SkillMiddleware::from_config(SkillConfig {
             skills_dir: dir.path().to_string_lossy().into(),

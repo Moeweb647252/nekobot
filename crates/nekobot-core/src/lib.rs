@@ -83,10 +83,7 @@ impl<S> NekoBot<S> {
     /// return a `Box<dyn Channel>`.
     pub fn with_channel<F>(mut self, name: impl Into<String>, create: F) -> anyhow::Result<Self>
     where
-        F: Fn(&config::ChannelConfig) -> anyhow::Result<Box<dyn Channel>>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&config::ChannelConfig) -> anyhow::Result<Box<dyn Channel>> + Send + Sync + 'static,
     {
         self.channel_registry.register(name, create)?;
         Ok(self)
@@ -136,9 +133,7 @@ impl<S> NekoBot<S> {
         &mut self.channel_registry
     }
 
-    async fn init(
-        &self,
-    ) -> Result<Vec<crate::runtime::channel::ChannelRuntime>, anyhow::Error> {
+    async fn init(&self) -> Result<Vec<crate::runtime::channel::ChannelRuntime>, anyhow::Error> {
         self.config.validate()?;
 
         let conn = self.init_database().await?;
@@ -152,13 +147,8 @@ impl<S> NekoBot<S> {
 
     async fn init_database(&self) -> Result<turso::Connection, anyhow::Error> {
         use crate::entity::{
-            Entity,
-            channel_chat_agent::ChannelChatAgent,
-            channel_credential,
-            message::Message,
-            persona,
-            sender_gate_state::SenderGateState,
-            session::Session,
+            Entity, channel_chat_agent::ChannelChatAgent, channel_credential, message::Message,
+            persona, sender_gate_state::SenderGateState, session::Session,
         };
 
         let db = turso::Builder::new_local(&self.config.database_path)
@@ -177,8 +167,10 @@ impl<S> NekoBot<S> {
 
     fn init_providers(
         &self,
-    ) -> Result<std::collections::HashMap<String, std::sync::Arc<dyn provider::Provider>>, anyhow::Error>
-    {
+    ) -> Result<
+        std::collections::HashMap<String, std::sync::Arc<dyn provider::Provider>>,
+        anyhow::Error,
+    > {
         self.config
             .providers
             .iter()
@@ -209,9 +201,9 @@ impl<S> NekoBot<S> {
             .agents
             .iter()
             .map(|agent| {
-                let provider = providers.get(&agent.provider).ok_or_else(|| {
-                    anyhow::anyhow!("provider not found: {}", agent.provider)
-                })?;
+                let provider = providers
+                    .get(&agent.provider)
+                    .ok_or_else(|| anyhow::anyhow!("provider not found: {}", agent.provider))?;
                 AgentSessionConfig::from_agent_config(
                     agent,
                     std::sync::Arc::clone(provider),

@@ -37,8 +37,10 @@ const INTENT_GROUP_AND_C2C: u32 = 1 << 25;
 /// Button/menu interaction callbacks
 const INTENT_INTERACTION: u32 = 1 << 26;
 /// Full intents: groups, C2C, guild messages, and interactions
-const FULL_INTENTS: u32 =
-    INTENT_PUBLIC_GUILD_MESSAGES | INTENT_DIRECT_MESSAGE | INTENT_GROUP_AND_C2C | INTENT_INTERACTION;
+const FULL_INTENTS: u32 = INTENT_PUBLIC_GUILD_MESSAGES
+    | INTENT_DIRECT_MESSAGE
+    | INTENT_GROUP_AND_C2C
+    | INTENT_INTERACTION;
 
 // ── QQChannel ──
 
@@ -116,9 +118,7 @@ impl QQChannel {
             .context("failed to read token response body")?;
 
         let resp: TokenResponse = serde_json::from_str(&body).with_context(|| {
-            format!(
-                "failed to parse access token response (status={status}): {body}"
-            )
+            format!("failed to parse access token response (status={status}): {body}")
         })?;
 
         let token = resp.access_token.clone();
@@ -149,8 +149,9 @@ impl QQChannel {
             .await
             .context("failed to read gateway response body")?;
 
-        let resp: GatewayResponse = serde_json::from_str(&body)
-            .with_context(|| format!("failed to parse gateway response (status={status}): {body}"))?;
+        let resp: GatewayResponse = serde_json::from_str(&body).with_context(|| {
+            format!("failed to parse gateway response (status={status}): {body}")
+        })?;
 
         Ok(resp.url)
     }
@@ -221,7 +222,9 @@ where
             .map(Some)
             .map_err(|_| de::Error::custom("invalid string for expires_in")),
         Value::Null => Ok(None),
-        _ => Err(de::Error::custom("expected number or string for expires_in")),
+        _ => Err(de::Error::custom(
+            "expected number or string for expires_in",
+        )),
     }
 }
 
@@ -331,10 +334,7 @@ impl Channel for QQChannel {
     /// The WebSocket event loop runs in a background tokio task. Incoming
     /// messages are forwarded through `event_tx` as [`Event::IncomingMessage`].
     /// Returns [`ChannelInfo`] immediately without waiting for connection.
-    async fn register(
-        &self,
-        event_tx: mpsc::Sender<Event>,
-    ) -> anyhow::Result<ChannelInfo> {
+    async fn register(&self, event_tx: mpsc::Sender<Event>) -> anyhow::Result<ChannelInfo> {
         let state = self.state.clone();
         let app_id = self.app_id.clone();
         let client_secret = self.client_secret.clone();
@@ -345,7 +345,17 @@ impl Channel for QQChannel {
         let gateway_url = self.get_gateway_url(&token).await?;
 
         tokio::spawn(async move {
-            if let Err(e) = run_gateway_loop(&http, &app_id, &client_secret, &gateway_url, &token, state, event_tx_ws).await {
+            if let Err(e) = run_gateway_loop(
+                &http,
+                &app_id,
+                &client_secret,
+                &gateway_url,
+                &token,
+                state,
+                event_tx_ws,
+            )
+            .await
+            {
                 tracing::error!(target: "qqbot", "gateway loop exited: {e}");
             }
         });
@@ -383,7 +393,11 @@ impl Channel for QQChannel {
 // ── Gateway event loop ──
 
 /// Fetch a new access token via HTTP. Returns `(token, expires_in)`.
-async fn fetch_token(http: &Client, app_id: &str, client_secret: &str) -> anyhow::Result<(String, Option<u64>)> {
+async fn fetch_token(
+    http: &Client,
+    app_id: &str,
+    client_secret: &str,
+) -> anyhow::Result<(String, Option<u64>)> {
     let resp: TokenResponse = http
         .post(TOKEN_URL)
         .json(&serde_json::json!({
@@ -442,14 +456,7 @@ async fn run_gateway_loop(
             target: "qqbot",
             "connecting to gateway (attempt {attempt}): {current_gateway_url}"
         );
-        match run_gateway_session(
-            http,
-            &current_gateway_url,
-            &current_token,
-            &event_tx,
-        )
-        .await
-        {
+        match run_gateway_session(http, &current_gateway_url, &current_token, &event_tx).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 tracing::error!(target: "qqbot", "gateway session ended ({attempt}): {e:#}");
@@ -755,11 +762,7 @@ async fn send_group_markdown(
 ///
 /// `msg_type=6` with `input_notify.input_type=1` shows a persistent typing
 /// indicator for up to `input_second` seconds. Not supported for group chats.
-async fn send_c2c_input_notify(
-    http: &Client,
-    token: &str,
-    openid: &str,
-) -> anyhow::Result<()> {
+async fn send_c2c_input_notify(http: &Client, token: &str, openid: &str) -> anyhow::Result<()> {
     http.post(format!("{API_BASE}/v2/users/{openid}/messages"))
         .header("Authorization", format!("QQBot {token}"))
         .json(&serde_json::json!({

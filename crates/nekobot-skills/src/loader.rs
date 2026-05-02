@@ -43,7 +43,12 @@ pub fn discover(root_dir: &Path) -> anyhow::Result<Vec<SkillMeta>> {
             tracing::warn!(target: "skill", "skills directory not found: {}", root_dir.display());
             return Ok(Vec::new());
         }
-        Err(e) => return Err(anyhow::anyhow!("failed to read skills dir {}: {e}", root_dir.display())),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to read skills dir {}: {e}",
+                root_dir.display()
+            ));
+        }
     };
 
     for entry in entries {
@@ -112,8 +117,12 @@ fn parse_frontmatter(path: &Path) -> anyhow::Result<Frontmatter> {
     let content = fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
 
-    let frontmatter_str = extract_frontmatter(&content)
-        .ok_or_else(|| anyhow::anyhow!("{}: missing YAML frontmatter (--- delimiters)", path.display()))?;
+    let frontmatter_str = extract_frontmatter(&content).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}: missing YAML frontmatter (--- delimiters)",
+            path.display()
+        )
+    })?;
 
     let fm: Frontmatter = serde_yml::from_str(&frontmatter_str)
         .map_err(|e| anyhow::anyhow!("{}: invalid YAML frontmatter: {e}", path.display()))?;
@@ -178,17 +187,25 @@ mod tests {
     fn write_skill(dir: &Path, name: &str, description: &str, body: &str) {
         let skill_dir = dir.join(name);
         fs::create_dir_all(&skill_dir).unwrap();
-        let content = format!(
-            "---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
-        );
+        let content = format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n");
         fs::write(skill_dir.join("SKILL.md"), content).unwrap();
     }
 
     #[test]
     fn discover_finds_skills() {
         let dir = tempfile::tempdir().unwrap();
-        write_skill(dir.path(), "alpha", "First skill", "# Alpha\nInstructions here.");
-        write_skill(dir.path(), "beta", "Second skill", "# Beta\nMore instructions.");
+        write_skill(
+            dir.path(),
+            "alpha",
+            "First skill",
+            "# Alpha\nInstructions here.",
+        );
+        write_skill(
+            dir.path(),
+            "beta",
+            "Second skill",
+            "# Beta\nMore instructions.",
+        );
         // Not a skill (no SKILL.md)
         fs::create_dir_all(dir.path().join("not-a-skill")).unwrap();
 
@@ -231,7 +248,12 @@ mod tests {
     #[test]
     fn load_returns_full_skill() {
         let dir = tempfile::tempdir().unwrap();
-        write_skill(dir.path(), "test", "A test skill", "# Instructions\nDo the thing.");
+        write_skill(
+            dir.path(),
+            "test",
+            "A test skill",
+            "# Instructions\nDo the thing.",
+        );
 
         let skills = discover(dir.path()).unwrap();
         assert_eq!(skills.len(), 1);

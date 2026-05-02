@@ -194,7 +194,11 @@ impl AgentSession {
     }
 
     /// Builds a `Context` from this session, binding the given event sender.
-    pub fn context(&self, event_sender: Sender<MiddlewareEvent>, app_db: turso::Connection) -> Context {
+    pub fn context(
+        &self,
+        event_sender: Sender<MiddlewareEvent>,
+        app_db: turso::Connection,
+    ) -> Context {
         Context::new(
             self.agent_name.clone(),
             self.session_id,
@@ -891,7 +895,13 @@ mod tests {
         };
 
         agent
-            .init(&Context::new("Neko", 1, event_sender, tool_registry, test_db()))
+            .init(&Context::new(
+                "Neko",
+                1,
+                event_sender,
+                tool_registry,
+                test_db(),
+            ))
             .await?;
 
         assert_eq!(

@@ -76,11 +76,17 @@ mod tests {
 
         // Upsert
         upsert(&c, "test", r#"{"token":"abc"}"#).await.unwrap();
-        assert_eq!(get(&c, "test").await.unwrap().unwrap(), r#"{"token":"abc"}"#);
+        assert_eq!(
+            get(&c, "test").await.unwrap().unwrap(),
+            r#"{"token":"abc"}"#
+        );
 
         // Upsert replaces
         upsert(&c, "test", r#"{"token":"xyz"}"#).await.unwrap();
-        assert_eq!(get(&c, "test").await.unwrap().unwrap(), r#"{"token":"xyz"}"#);
+        assert_eq!(
+            get(&c, "test").await.unwrap().unwrap(),
+            r#"{"token":"xyz"}"#
+        );
 
         // Delete
         assert!(delete(&c, "test").await.unwrap());

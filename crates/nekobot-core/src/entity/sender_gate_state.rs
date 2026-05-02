@@ -54,7 +54,10 @@ impl SenderGateState {
             )
             .await?;
 
-        rows.next().await?.map(|row| Self::from_row(&row)).transpose()
+        rows.next()
+            .await?
+            .map(|row| Self::from_row(&row))
+            .transpose()
     }
 
     /// Insert or replace the gate state.

@@ -48,7 +48,10 @@ impl EmbeddingClient {
             .context("embedding request failed")?;
 
         let status = resp.status();
-        let body = resp.text().await.context("failed to read embedding response")?;
+        let body = resp
+            .text()
+            .await
+            .context("failed to read embedding response")?;
 
         if !status.is_success() {
             anyhow::bail!("embedding API returned {status}: {body}");

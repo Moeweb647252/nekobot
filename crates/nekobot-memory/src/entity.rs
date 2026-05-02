@@ -106,8 +106,12 @@ mod tests {
         let conn = test_conn().await;
         create_table(&conn).await.unwrap();
 
-        insert(&conn, "test", "cats are great", &[1.0, 0.0]).await.unwrap();
-        insert(&conn, "test", "dogs are loyal", &[0.0, 1.0]).await.unwrap();
+        insert(&conn, "test", "cats are great", &[1.0, 0.0])
+            .await
+            .unwrap();
+        insert(&conn, "test", "dogs are loyal", &[0.0, 1.0])
+            .await
+            .unwrap();
 
         let results = search(&conn, "test", &[0.9, 0.1], 2).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -118,7 +122,9 @@ mod tests {
     async fn search_skips_other_agents() {
         let conn = test_conn().await;
         create_table(&conn).await.unwrap();
-        insert(&conn, "alice", "alice memory", &[1.0]).await.unwrap();
+        insert(&conn, "alice", "alice memory", &[1.0])
+            .await
+            .unwrap();
         insert(&conn, "bob", "bob memory", &[1.0]).await.unwrap();
 
         let results = search(&conn, "alice", &[1.0], 5).await.unwrap();

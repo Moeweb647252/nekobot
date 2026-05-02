@@ -1,10 +1,10 @@
 //! TypeScript processing: parse, detect `any`, strip types, emit JS.
 
-use swc_core::common::{sync::Lrc, FileName, Mark, SourceMap, GLOBALS};
+use swc_core::common::{FileName, GLOBALS, Mark, SourceMap, sync::Lrc};
 use swc_core::ecma::{
     ast::{EsVersion, Pass, Program, TsKeywordTypeKind, TsType},
-    codegen::{self, text_writer::JsWriter, Emitter},
-    parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax},
+    codegen::{self, Emitter, text_writer::JsWriter},
+    parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer},
     transforms::typescript,
     visit::{Visit, VisitWith},
 };

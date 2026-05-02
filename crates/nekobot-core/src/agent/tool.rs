@@ -166,7 +166,9 @@ mod tests {
 
     #[test]
     fn tool_spec_copies_metadata_without_executable_tool() {
-        let tool = TestTool { name: "test".to_owned() };
+        let tool = TestTool {
+            name: "test".to_owned(),
+        };
         let spec = ToolSpec::from_tool(&tool);
 
         assert_eq!(spec.name, "test");
@@ -178,7 +180,9 @@ mod tests {
     fn tool_registry_builds_specs_for_registered_tools() -> anyhow::Result<()> {
         let registry = ToolRegistry::new();
 
-        registry.register(Arc::new(TestTool { name: "test".to_owned() }))?;
+        registry.register(Arc::new(TestTool {
+            name: "test".to_owned(),
+        }))?;
 
         let specs = registry.tool_specs()?;
         assert_eq!(specs.len(), 1);
@@ -193,8 +197,12 @@ mod tests {
     fn tool_registry_rejects_duplicate_names() -> anyhow::Result<()> {
         let registry = ToolRegistry::new();
 
-        registry.register(Arc::new(TestTool { name: "test".to_owned() }))?;
-        let result = registry.register(Arc::new(TestTool { name: "test".to_owned() }));
+        registry.register(Arc::new(TestTool {
+            name: "test".to_owned(),
+        }))?;
+        let result = registry.register(Arc::new(TestTool {
+            name: "test".to_owned(),
+        }));
 
         assert!(result.is_err());
         Ok(())
@@ -204,7 +212,9 @@ mod tests {
     fn tool_registry_get_returns_registered_tool() -> anyhow::Result<()> {
         let registry = ToolRegistry::new();
 
-        registry.register(Arc::new(TestTool { name: "test".to_owned() }))?;
+        registry.register(Arc::new(TestTool {
+            name: "test".to_owned(),
+        }))?;
 
         let tool = registry.get("test")?.expect("tool should be registered");
         assert_eq!(tool.name(), "test");

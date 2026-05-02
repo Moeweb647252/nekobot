@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nekobot_channel::{Channel, ChannelInfo, ChannelId, ChatInfo, ChatId, Event, ReplyTarget, Request};
+use nekobot_channel::{
+    Channel, ChannelId, ChannelInfo, ChatId, ChatInfo, Event, ReplyTarget, Request,
+};
 use tokio::sync::mpsc::Sender;
 use turso::Connection;
 
@@ -24,11 +26,7 @@ use crate::{
 
 use super::session_gate::{InterceptResult, SessionGate};
 
-type ChannelAgentKey = (
-    ChannelId,
-    ChatId,
-    AgentName,
-);
+type ChannelAgentKey = (ChannelId, ChatId, AgentName);
 
 /// Decides which agent handles a given chat.
 ///
@@ -119,31 +117,26 @@ impl ChannelRuntime {
                             .intercept(channel_info.id.as_str(), sender.id.as_str(), &content)
                             .await?
                         {
-                        InterceptResult::Reject { reply } => {
-                            self.channel
-                                .send(Request::SendMessage {
-                                    target: chat.reply_target.clone(),
-                                    content: reply,
-                                })
-                                .await?;
-                            return Ok(());
+                            InterceptResult::Reject { reply } => {
+                                self.channel
+                                    .send(Request::SendMessage {
+                                        target: chat.reply_target.clone(),
+                                        content: reply,
+                                    })
+                                    .await?;
+                                return Ok(());
+                            }
+                            InterceptResult::Pass { agent_name } => Some(agent_name),
                         }
-                        InterceptResult::Pass { agent_name } => Some(agent_name),
+                    } else {
+                        None
                     }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
+                };
 
-            let handle = self
-                .ensure_agent_session(
-                    channel_info,
-                    &chat,
-                    output_sender,
-                    agent_name_override,
-                    )
+                let handle = self
+                    .ensure_agent_session(channel_info, &chat, output_sender, agent_name_override)
                     .await?;
 
                 handle
@@ -167,15 +160,13 @@ impl ChannelRuntime {
         output_sender: Sender<AgentOutput>,
         agent_name_override: Option<String>,
     ) -> anyhow::Result<AgentSessionHandle> {
-        let agent_name_str = agent_name_override
-            .unwrap_or_else(|| (self.route)(&channel_info.id, &chat.id));
+        let agent_name_str =
+            agent_name_override.unwrap_or_else(|| (self.route)(&channel_info.id, &chat.id));
         let config = self
             .agent_configs
             .iter()
             .find(|c| c.agent_name == agent_name_str)
-            .ok_or_else(|| {
-                anyhow::anyhow!("no agent config found for agent '{agent_name_str}'")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("no agent config found for agent '{agent_name_str}'"))?;
 
         let agent_name = AgentName::from(agent_name_str);
         let mapping = match ChannelChatAgent::get_by_channel_chat_agent(
@@ -205,8 +196,7 @@ impl ChannelRuntime {
                 }
             }
             None => {
-                let session =
-                    Session::create(&self.context.app_db, agent_name.as_str()).await?;
+                let session = Session::create(&self.context.app_db, agent_name.as_str()).await?;
                 ChannelChatAgent::create(
                     &self.context.app_db,
                     NewChannelChatAgent {
@@ -236,8 +226,7 @@ impl ChannelRuntime {
             return Ok(handle.clone());
         }
 
-        let agent_session =
-            AgentSession::new(mapping.session_id.as_i64(), config.clone());
+        let agent_session = AgentSession::new(mapping.session_id.as_i64(), config.clone());
         let handle = agent_session
             .start(self.context.app_db.clone(), output_sender)
             .await?;

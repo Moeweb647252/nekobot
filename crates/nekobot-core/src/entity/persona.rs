@@ -46,7 +46,12 @@ mod tests {
     use turso::Builder;
 
     async fn conn() -> Connection {
-        Builder::new_local(":memory:").build().await.unwrap().connect().unwrap()
+        Builder::new_local(":memory:")
+            .build()
+            .await
+            .unwrap()
+            .connect()
+            .unwrap()
     }
 
     #[tokio::test]

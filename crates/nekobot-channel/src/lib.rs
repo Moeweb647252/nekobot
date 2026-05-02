@@ -28,13 +28,9 @@ pub enum Request {
         content: String,
     },
     /// Show a typing indicator in the given target.
-    StartTyping {
-        target: ReplyTarget,
-    },
+    StartTyping { target: ReplyTarget },
     /// Stop the typing indicator in the given target.
-    StopTyping {
-        target: ReplyTarget,
-    },
+    StopTyping { target: ReplyTarget },
 }
 
 /// Metadata about a registered channel, returned by [`Channel::register`].

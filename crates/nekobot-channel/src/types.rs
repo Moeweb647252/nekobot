@@ -47,7 +47,10 @@ macro_rules! string_newtype {
 
 string_newtype!(ChannelId, "Unique identifier for a channel instance.");
 string_newtype!(ChannelName, "Human-readable name of a channel.");
-string_newtype!(ChatId, "Unique identifier for a conversation within a channel.");
+string_newtype!(
+    ChatId,
+    "Unique identifier for a conversation within a channel."
+);
 
 impl ChatId {
     /// Returns true if this is a C2C (private) chat.
@@ -58,7 +61,10 @@ impl ChatId {
 string_newtype!(ChatName, "Human-readable name of a conversation.");
 string_newtype!(SenderId, "Unique identifier for a message sender.");
 string_newtype!(SenderName, "Human-readable name of a message sender.");
-string_newtype!(ReplyTarget, "Opaque routing token used to direct replies back to the correct conversation.");
+string_newtype!(
+    ReplyTarget,
+    "Opaque routing token used to direct replies back to the correct conversation."
+);
 
 #[cfg(test)]
 mod tests {

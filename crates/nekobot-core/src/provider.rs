@@ -12,8 +12,8 @@ use serde_json::{Map, Value};
 use tokio::sync::mpsc::Sender;
 
 use crate::agent::types::{ChatRequest, ChatResponse, Usage};
-use crate::registry::FactoryRegistry;
 use crate::config::ProviderConfig;
+use crate::registry::FactoryRegistry;
 
 /// A chat completion request combined with model options.
 #[derive(Clone, Debug, Default)]

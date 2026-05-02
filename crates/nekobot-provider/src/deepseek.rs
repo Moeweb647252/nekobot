@@ -361,8 +361,7 @@ fn chat_message(message: &ChatMessage) -> Value {
                 }
             }
             if !tool_calls.is_empty() {
-                msg["tool_calls"] =
-                    serde_json::to_value(tool_calls).unwrap_or_default();
+                msg["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or_default();
             }
             if text.is_empty() && !tool_calls.is_empty() {
                 msg["content"] = Value::Null;
