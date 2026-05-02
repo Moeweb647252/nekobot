@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use serde::de;
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::debug;
@@ -417,7 +416,7 @@ impl AgentSession {
         let should_interact = match activation {
             AgentActivation::ChannelMessage { content, .. } => {
                 session
-                    .add_message(MessageRole::User.to_string(), content, None, None)
+                    .add_message(MessageRole::User.to_string(), content, None, None, None)
                     .await?;
                 true
             }
@@ -432,12 +431,18 @@ impl AgentSession {
 
         let request = self.build_chat_request(app_db).await?;
         let response = self.interact(ctx, request).await?;
+        let tool_calls_json = if response.tool_calls.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&response.tool_calls).ok()
+        };
         session
             .add_message(
                 MessageRole::Assistant.to_string(),
                 response.content.clone(),
                 response.reasoning_content.clone(),
                 None,
+                tool_calls_json,
             )
             .await?;
 
@@ -464,6 +469,7 @@ impl AgentSession {
                         prompt,
                         None,
                         None,
+                        None,
                     )
                     .await?;
                 Ok(true)
@@ -477,27 +483,20 @@ impl AgentSession {
             .await?
             .into_iter()
             .map(|message| {
-                let role = chat_role(message.role.clone());
+                let role = chat_role(&message.role);
                 let content = match &role {
                     Role::Tool => ChatMessageContent::Tool {
                         tool_call_id: message.tool_call_id.unwrap_or_default(),
                         result: message.content,
                     },
                     Role::Assistant => {
-                        let (text, tool_calls) = if message.content.starts_with("{\"tool_calls\":")
-                        {
-                            if let Ok(stored) =
-                                serde_json::from_str::<StoredAssistantContent>(&message.content)
-                            {
-                                (stored.content, stored.tool_calls)
-                            } else {
-                                (message.content, Vec::new())
-                            }
-                        } else {
-                            (message.content, Vec::new())
-                        };
+                        let tool_calls = message
+                            .tool_calls
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str::<Vec<ToolCall>>(s).ok())
+                            .unwrap_or_default();
                         ChatMessageContent::Assistant {
-                            text,
+                            text: message.content,
                             reasoning: message.reasoning_content,
                             tool_calls,
                         }
@@ -556,21 +555,12 @@ pub enum AgentOutput {
     SendMessage { session_id: i64, content: String },
 }
 
-/// Helper for deserializing assistant message content that may contain embedded tool calls.
-#[derive(serde::Deserialize)]
-struct StoredAssistantContent {
-    #[serde(default)]
-    content: String,
-    #[serde(default)]
-    tool_calls: Vec<ToolCall>,
-}
-
-fn chat_role(role: String) -> Role {
-    match role.as_str() {
+fn chat_role(role: &str) -> Role {
+    match role {
         "user" => Role::User,
         "assistant" => Role::Assistant,
         "tool" => Role::Tool,
-        _ => Role::Custom(role),
+        _ => Role::Custom(role.to_owned()),
     }
 }
 

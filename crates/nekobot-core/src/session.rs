@@ -20,6 +20,7 @@ impl SessionHandle {
         content: impl Into<String>,
         reasoning_content: Option<String>,
         tool_call_id: Option<String>,
+        tool_calls: Option<String>,
     ) -> anyhow::Result<entity::message::Message> {
         Message::create(
             &self.app_db,
@@ -28,6 +29,7 @@ impl SessionHandle {
             content,
             reasoning_content,
             tool_call_id,
+            tool_calls,
         )
         .await
     }
