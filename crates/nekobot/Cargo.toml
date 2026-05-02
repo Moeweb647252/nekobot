@@ -14,6 +14,7 @@ nekobot-script = { workspace = true }
 nekobot-skills = { workspace = true }
 nekobot-tools = { workspace = true }
 nekobot-memory = { workspace = true }
+nekobot-persona = { workspace = true }
 serde_json.workspace = true
 serde_yml.workspace = true
 tracing.workspace = true

@@ -1839,6 +1839,7 @@ dependencies = [
  "nekobot-core",
  "nekobot-mcp",
  "nekobot-memory",
+ "nekobot-persona",
  "nekobot-provider",
  "nekobot-script",
  "nekobot-skills",
@@ -1906,6 +1907,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "turso",
+]
+
+[[package]]
+name = "nekobot-persona"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nekobot-core",
+ "serde_json",
  "tracing",
  "turso",
 ]

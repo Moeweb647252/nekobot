@@ -156,6 +156,7 @@ impl<S> NekoBot<S> {
             channel_chat_agent::ChannelChatAgent,
             channel_credential,
             message::Message,
+            persona,
             sender_gate_state::SenderGateState,
             session::Session,
         };
@@ -170,6 +171,7 @@ impl<S> NekoBot<S> {
         ChannelChatAgent::create_table(&conn).await?;
         SenderGateState::create_table(&conn).await?;
         channel_credential::create_table(&conn).await?;
+        persona::create_table(&conn).await?;
         Ok(conn)
     }
 

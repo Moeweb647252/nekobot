@@ -112,6 +112,15 @@ async fn main() {
         })
         .expect("Failed to register memory middleware");
 
+    // Register persona middleware (persistent agent personality)
+    bot.middleware_registry_mut()
+        .register("persona", |_config| {
+            Ok(std::sync::Arc::new(
+                nekobot_persona::PersonaMiddleware::new(),
+            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+        })
+        .expect("Failed to register persona middleware");
+
     // Start the bot (connects channels, runs agents)
     if let Err(e) = bot.run().await {
         tracing::error!("NekoBot exited: {e}");
