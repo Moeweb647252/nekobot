@@ -12,6 +12,7 @@ nekobot-mcp = { workspace = true }
 nekobot-provider = { workspace = true }
 nekobot-script = { workspace = true }
 nekobot-skills = { workspace = true }
+nekobot-tools = { workspace = true }
 serde_json.workspace = true
 serde_yml.workspace = true
 tracing.workspace = true

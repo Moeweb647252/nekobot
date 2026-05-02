@@ -1841,6 +1841,7 @@ dependencies = [
  "nekobot-provider",
  "nekobot-script",
  "nekobot-skills",
+ "nekobot-tools",
  "serde_json",
  "serde_yml",
  "tokio",
@@ -1937,6 +1938,19 @@ dependencies = [
  "serde_json",
  "serde_yml",
  "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nekobot-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nekobot-core",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

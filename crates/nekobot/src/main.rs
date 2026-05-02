@@ -86,6 +86,18 @@ async fn main() {
         })
         .expect("Failed to register skill middleware");
 
+    // Register built-in tools middleware (bash, current_time)
+    bot.middleware_registry_mut()
+        .register("tools", |config| {
+            let cfg: nekobot_tools::ToolsConfig = serde_json::from_value(
+                serde_json::Value::Object(config.data.clone()),
+            )?;
+            Ok(std::sync::Arc::new(
+                nekobot_tools::ToolsMiddleware::from_config(cfg),
+            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+        })
+        .expect("Failed to register tools middleware");
+
     // Start the bot (connects channels, runs agents)
     if let Err(e) = bot.run().await {
         tracing::error!("NekoBot exited: {e}");
