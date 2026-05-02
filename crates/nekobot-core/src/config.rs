@@ -139,6 +139,9 @@ pub struct AgentConfig {
     pub provider: String,
     pub model: String,
     pub middlewares: Vec<MiddlewareConfig>,
+    /// Max number of past messages to include in the provider request (default: unbounded).
+    #[serde(default)]
+    pub max_message_count: Option<usize>,
 }
 
 /// Configuration for a single middleware, identified by name with additional

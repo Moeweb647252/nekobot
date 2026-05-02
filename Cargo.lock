@@ -1840,6 +1840,7 @@ dependencies = [
  "nekobot-mcp",
  "nekobot-provider",
  "nekobot-script",
+ "nekobot-skill",
  "serde_json",
  "serde_yml",
  "tokio",
@@ -1928,6 +1929,17 @@ dependencies = [
 [[package]]
 name = "nekobot-skill"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nekobot-core",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "new_debug_unreachable"

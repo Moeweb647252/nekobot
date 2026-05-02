@@ -74,6 +74,18 @@ async fn main() {
         })
         .expect("Failed to register script middleware");
 
+    // Register skill middleware factory (Agent Skills support)
+    bot.middleware_registry_mut()
+        .register("skill", |config| {
+            let cfg: nekobot_skill::SkillConfig = serde_json::from_value(
+                serde_json::Value::Object(config.data.clone()),
+            )?;
+            Ok(std::sync::Arc::new(
+                nekobot_skill::SkillMiddleware::from_config(cfg)?,
+            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+        })
+        .expect("Failed to register skill middleware");
+
     // Start the bot (connects channels, runs agents)
     if let Err(e) = bot.run().await {
         tracing::error!("NekoBot exited: {e}");

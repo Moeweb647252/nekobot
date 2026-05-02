@@ -109,6 +109,7 @@ pub struct AgentSessionConfig {
     pub middlewares: Vec<Arc<dyn Middleware>>,
     pub provider: Arc<dyn Provider>,
     pub model_options: ModelOptions,
+    pub max_message_count: Option<usize>,
 }
 
 impl AgentSessionConfig {
@@ -125,6 +126,7 @@ impl AgentSessionConfig {
             provider,
             model_options,
             middlewares,
+            agent.max_message_count,
         ))
     }
 
@@ -134,12 +136,14 @@ impl AgentSessionConfig {
         provider: Arc<dyn Provider>,
         model_options: ModelOptions,
         middlewares: Vec<Arc<dyn Middleware>>,
+        max_message_count: Option<usize>,
     ) -> Self {
         Self {
             agent_name: agent_name.into(),
             middlewares,
             provider,
             model_options,
+            max_message_count,
         }
     }
 }
@@ -168,6 +172,7 @@ pub struct AgentSession {
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model_options: ModelOptions,
     pub(crate) tool_registry: Arc<ToolRegistry>,
+    pub(crate) max_message_count: Option<usize>,
 }
 
 impl AgentSession {
@@ -180,6 +185,7 @@ impl AgentSession {
             provider: config.provider,
             model_options: config.model_options,
             tool_registry: Arc::new(ToolRegistry::new()),
+            max_message_count: config.max_message_count,
         }
     }
 
@@ -479,8 +485,15 @@ impl AgentSession {
 
     /// Loads persisted messages from the database and builds a `ChatRequest` for the current session.
     async fn build_chat_request(&self, app_db: &Connection) -> anyhow::Result<ChatRequest> {
-        let messages = Message::list_by_session(app_db, self.session_id)
-            .await?
+        let all_messages = Message::list_by_session(app_db, self.session_id).await?;
+        let messages: Vec<_> = match self.max_message_count {
+            Some(limit) if all_messages.len() > limit => {
+                let skip = all_messages.len() - limit;
+                all_messages.into_iter().skip(skip).collect()
+            }
+            _ => all_messages,
+        };
+        let messages = messages
             .into_iter()
             .map(|message| {
                 let role = chat_role(&message.role);
@@ -706,6 +719,7 @@ mod tests {
             provider: "deepseek".to_owned(),
             model: "deepseek-v4-pro".to_owned(),
             middlewares: Vec::new(),
+            max_message_count: None,
         };
 
         let session_config = AgentSessionConfig::from_agent_config(
@@ -769,6 +783,7 @@ mod tests {
             provider: "deepseek".to_owned(),
             model: "deepseek-v4-pro".to_owned(),
             middlewares: vec![serde_json::from_value(json!({ "name": "broken" })).unwrap()],
+            max_message_count: None,
         };
 
         let result = AgentSessionConfig::from_agent_config(
@@ -817,6 +832,7 @@ mod tests {
             }),
             model_options: ModelOptions::default(),
             tool_registry: Arc::clone(&tool_registry),
+            max_message_count: None,
         };
 
         let response = agent
@@ -849,6 +865,7 @@ mod tests {
             }),
             model_options: ModelOptions::default(),
             tool_registry: Arc::clone(&tool_registry),
+            max_message_count: None,
         };
 
         agent
@@ -878,6 +895,7 @@ mod tests {
             }),
             model_options: ModelOptions::default(),
             tool_registry: Arc::new(ToolRegistry::new()),
+            max_message_count: None,
         };
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
         let handle = agent.start(conn.clone(), output_sender).await?;
@@ -923,6 +941,7 @@ mod tests {
             }),
             model_options: ModelOptions::default(),
             tool_registry: Arc::new(ToolRegistry::new()),
+            max_message_count: None,
         };
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
         let _handle = agent.start(conn.clone(), output_sender).await?;
@@ -965,6 +984,7 @@ mod tests {
                 ..ModelOptions::default()
             },
             tool_registry: Arc::clone(&tool_registry),
+            max_message_count: None,
         };
         let ctx = Context::new("Neko", 1, event_sender, tool_registry);
 
@@ -1018,6 +1038,7 @@ mod tests {
                 ..ModelOptions::default()
             },
             tool_registry: Arc::clone(&tool_registry),
+            max_message_count: None,
         };
 
         agent
@@ -1070,6 +1091,7 @@ mod tests {
             provider: Arc::new(FailingProvider),
             model_options: ModelOptions::default(),
             tool_registry: Arc::clone(&tool_registry),
+            max_message_count: None,
         };
 
         let result = agent
