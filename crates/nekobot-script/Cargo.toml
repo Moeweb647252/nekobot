@@ -4,4 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+nekobot-core = { workspace = true }
 boa_engine = "0.21"
+swc_core = { version = "65", features = [
+    "ecma_parser",
+    "ecma_ast",
+    "ecma_visit",
+    "ecma_transforms_typescript",
+    "ecma_codegen",
+    "common",
+] }
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

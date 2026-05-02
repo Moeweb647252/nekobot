@@ -62,6 +62,18 @@ async fn main() {
         })
         .expect("Failed to register MCP middleware");
 
+    // Register script middleware factory (eval_ts tool)
+    bot.middleware_registry_mut()
+        .register("script", |config| {
+            let cfg: nekobot_script::ScriptConfig = serde_json::from_value(
+                serde_json::Value::Object(config.data.clone()),
+            )?;
+            Ok(std::sync::Arc::new(
+                nekobot_script::ScriptMiddleware::from_config(cfg),
+            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+        })
+        .expect("Failed to register script middleware");
+
     // Start the bot (connects channels, runs agents)
     if let Err(e) = bot.run().await {
         tracing::error!("NekoBot exited: {e}");

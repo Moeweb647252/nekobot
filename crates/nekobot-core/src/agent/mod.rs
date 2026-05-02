@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use serde::de;
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tracing::debug;
 use turso::Connection;
 
 use crate::{
@@ -305,7 +307,10 @@ impl AgentSession {
                                 tracing::warn!(target: "agent", "failed to parse tool arguments for {}: {e}", tc.function.name);
                                 Value::Null
                             });
-                        tool.call(args).await
+                        debug!(target: "agent", "calling tool {} with args {args}", tc.function.name);
+                        let result = tool.call(args).await;
+                        debug!(target: "agent", "tool {} returned {result:?}", tc.function.name);
+                        result
                     }
                     None => Err(ToolError::NotFound(tc.function.name.clone())),
                 };
@@ -326,7 +331,11 @@ impl AgentSession {
         }
     }
 
-    async fn call_provider(&self, ctx: &Context, request: &ChatRequest) -> anyhow::Result<ChatResponse> {
+    async fn call_provider(
+        &self,
+        ctx: &Context,
+        request: &ChatRequest,
+    ) -> anyhow::Result<ChatResponse> {
         let provider_request = ProviderRequest {
             chat: request.clone(),
             options: self.model_options.clone(),
@@ -334,12 +343,8 @@ impl AgentSession {
         match self.provider.complete(provider_request).await {
             Ok(resp) => Ok(resp),
             Err(error) => {
-                self.run_error_hooks(
-                    ctx,
-                    &anyhow::anyhow!("{}", error),
-                    self.middlewares.len(),
-                )
-                .await;
+                self.run_error_hooks(ctx, &anyhow::anyhow!("{}", error), self.middlewares.len())
+                    .await;
                 Err(anyhow::anyhow!("{}", error))
             }
         }
@@ -479,18 +484,18 @@ impl AgentSession {
                         result: message.content,
                     },
                     Role::Assistant => {
-                        let (text, tool_calls) =
-                            if message.content.starts_with("{\"tool_calls\":") {
-                                if let Ok(stored) = serde_json::from_str::<StoredAssistantContent>(
-                                    &message.content,
-                                ) {
-                                    (stored.content, stored.tool_calls)
-                                } else {
-                                    (message.content, Vec::new())
-                                }
+                        let (text, tool_calls) = if message.content.starts_with("{\"tool_calls\":")
+                        {
+                            if let Ok(stored) =
+                                serde_json::from_str::<StoredAssistantContent>(&message.content)
+                            {
+                                (stored.content, stored.tool_calls)
                             } else {
                                 (message.content, Vec::new())
-                            };
+                            }
+                        } else {
+                            (message.content, Vec::new())
+                        };
                         ChatMessageContent::Assistant {
                             text,
                             reasoning: message.reasoning_content,
@@ -515,12 +520,7 @@ impl AgentSession {
 
     /// Runs after_chat hooks on middlewares that ran before the response.
     /// Errors are logged rather than propagated.
-    async fn run_after_chat_hooks(
-        &self,
-        ctx: &Context,
-        response: &mut ChatResponse,
-        start: usize,
-    ) {
+    async fn run_after_chat_hooks(&self, ctx: &Context, response: &mut ChatResponse, start: usize) {
         for middleware in self.middlewares[..start].iter().rev() {
             if let Err(error) = middleware.after_chat(ctx, response).await {
                 tracing::error!(target: "agent", "after_chat error in {}: {error:#}", middleware.name());
