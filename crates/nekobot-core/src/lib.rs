@@ -154,6 +154,7 @@ impl<S> NekoBot<S> {
         use crate::entity::{
             Entity,
             channel_chat_agent::ChannelChatAgent,
+            channel_credential,
             message::Message,
             sender_gate_state::SenderGateState,
             session::Session,
@@ -168,6 +169,7 @@ impl<S> NekoBot<S> {
         Message::create_table(&conn).await?;
         ChannelChatAgent::create_table(&conn).await?;
         SenderGateState::create_table(&conn).await?;
+        channel_credential::create_table(&conn).await?;
         Ok(conn)
     }
 

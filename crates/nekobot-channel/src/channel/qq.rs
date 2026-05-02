@@ -47,6 +47,7 @@ const FULL_INTENTS: u32 =
 /// Holds an HTTP client and a mutex-protected token cache. On `register()` it
 /// spawns a WebSocket event loop; `send()` pushes messages via HTTP API.
 pub struct QQChannel {
+    name: String,
     app_id: String,
     client_secret: String,
     http: Client,
@@ -67,9 +68,15 @@ struct CachedToken {
 impl QQChannel {
     /// Create a QQ channel adapter.
     ///
+    /// `name` is the user-defined channel identifier from config.
     /// `app_id` and `client_secret` are obtained from the QQ Open Platform console.
-    pub fn new(app_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        app_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
         Self {
+            name: name.into(),
             app_id: app_id.into(),
             client_secret: client_secret.into(),
             http: Client::new(),
@@ -337,7 +344,7 @@ impl Channel for QQChannel {
 
         Ok(ChannelInfo {
             id: crate::ChannelId::from(self.app_id.as_str()),
-            name: crate::ChannelName::from("QQ"),
+            name: crate::ChannelName::from(self.name.as_str()),
         })
     }
 

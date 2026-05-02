@@ -36,6 +36,8 @@ pub struct Context {
     pub event_sender: Sender<MiddlewareEvent>,
     /// Registry of runtime-registered tools available to this agent.
     pub tool_registry: Arc<ToolRegistry>,
+    /// Database connection for middleware that needs direct DB access.
+    pub app_db: turso::Connection,
 }
 
 impl Context {
@@ -45,12 +47,14 @@ impl Context {
         session_id: i64,
         event_sender: Sender<MiddlewareEvent>,
         tool_registry: Arc<ToolRegistry>,
+        app_db: turso::Connection,
     ) -> Self {
         Self {
             agent_name: agent_name.into(),
             session_id,
             event_sender,
             tool_registry,
+            app_db,
         }
     }
 
@@ -190,12 +194,13 @@ impl AgentSession {
     }
 
     /// Builds a `Context` from this session, binding the given event sender.
-    pub fn context(&self, event_sender: Sender<MiddlewareEvent>) -> Context {
+    pub fn context(&self, event_sender: Sender<MiddlewareEvent>, app_db: turso::Connection) -> Context {
         Context::new(
             self.agent_name.clone(),
             self.session_id,
             event_sender,
             Arc::clone(&self.tool_registry),
+            app_db,
         )
     }
 
@@ -207,7 +212,7 @@ impl AgentSession {
     ) -> anyhow::Result<AgentSessionHandle> {
         let (activation_sender, activation_receiver) = tokio::sync::mpsc::channel(32);
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(32);
-        let ctx = self.context(event_sender);
+        let ctx = self.context(event_sender, app_db.clone());
 
         self.init(&ctx).await?;
 
@@ -599,6 +604,23 @@ mod tests {
 
     use super::*;
 
+    fn test_db() -> turso::Connection {
+        use std::sync::OnceLock;
+        static DB: OnceLock<turso::Connection> = OnceLock::new();
+        DB.get_or_init(|| {
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let db = turso::Builder::new_local(":memory:").build().await.unwrap();
+                    db.connect().unwrap()
+                })
+            })
+            .join()
+            .unwrap()
+        })
+        .clone()
+    }
+
     struct StaticProvider {
         called: Arc<AtomicBool>,
     }
@@ -837,7 +859,7 @@ mod tests {
 
         let response = agent
             .interact(
-                Context::new("Neko", 1, event_sender, tool_registry),
+                Context::new("Neko", 1, event_sender, tool_registry, test_db()),
                 ChatRequest {
                     messages: Vec::new(),
                     system_prompt: None,
@@ -869,7 +891,7 @@ mod tests {
         };
 
         agent
-            .init(&Context::new("Neko", 1, event_sender, tool_registry))
+            .init(&Context::new("Neko", 1, event_sender, tool_registry, test_db()))
             .await?;
 
         assert_eq!(
@@ -986,7 +1008,7 @@ mod tests {
             tool_registry: Arc::clone(&tool_registry),
             max_message_count: None,
         };
-        let ctx = Context::new("Neko", 1, event_sender, tool_registry);
+        let ctx = Context::new("Neko", 1, event_sender, tool_registry, test_db());
 
         agent.init(&ctx).await?;
         agent.interact(ctx, ChatRequest::default()).await?;
@@ -1043,7 +1065,7 @@ mod tests {
 
         agent
             .interact(
-                Context::new("Neko", 1, event_sender, tool_registry),
+                Context::new("Neko", 1, event_sender, tool_registry, test_db()),
                 ChatRequest::default(),
             )
             .await?;
@@ -1096,7 +1118,7 @@ mod tests {
 
         let result = agent
             .interact(
-                Context::new("Neko", 1, event_sender, tool_registry),
+                Context::new("Neko", 1, event_sender, tool_registry, test_db()),
                 ChatRequest::default(),
             )
             .await;

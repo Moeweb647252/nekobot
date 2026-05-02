@@ -6,6 +6,7 @@
 use turso::Connection;
 
 pub mod channel_chat_agent;
+pub mod channel_credential;
 pub mod message;
 pub mod sender_gate_state;
 pub mod session;

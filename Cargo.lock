@@ -1838,6 +1838,7 @@ dependencies = [
  "nekobot-channel",
  "nekobot-core",
  "nekobot-mcp",
+ "nekobot-memory",
  "nekobot-provider",
  "nekobot-script",
  "nekobot-skills",
@@ -1897,6 +1898,17 @@ dependencies = [
 [[package]]
 name = "nekobot-memory"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nekobot-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "turso",
+]
 
 [[package]]
 name = "nekobot-provider"

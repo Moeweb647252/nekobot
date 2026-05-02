@@ -31,10 +31,12 @@ async fn main() {
         "QQ",
         |cfg| match cfg {
             nekobot_core::config::ChannelConfig::QQ {
+                name,
                 app_id,
                 client_secret,
                 ..
             } => Ok(Box::new(nekobot_channel::channel::QQChannel::new(
+                name.clone(),
                 app_id.clone(),
                 client_secret.clone(),
             )) as Box<dyn nekobot_channel::Channel>),
@@ -97,6 +99,18 @@ async fn main() {
             ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
         })
         .expect("Failed to register tools middleware");
+
+    // Register memory middleware (semantic memory)
+    bot.middleware_registry_mut()
+        .register("memory", |config| {
+            let cfg: nekobot_memory::MemoryConfig = serde_json::from_value(
+                serde_json::Value::Object(config.data.clone()),
+            )?;
+            Ok(std::sync::Arc::new(
+                nekobot_memory::MemoryMiddleware::from_config(cfg),
+            ) as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+        })
+        .expect("Failed to register memory middleware");
 
     // Start the bot (connects channels, runs agents)
     if let Err(e) = bot.run().await {

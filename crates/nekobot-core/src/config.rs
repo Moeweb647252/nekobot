@@ -32,8 +32,18 @@ impl Config {
     /// Validates the entire configuration, checking for duplicate/empty names,
     /// missing models, unknown provider references, and invalid middlewares.
     pub fn validate(&self) -> Result<(), ConfigValidationError> {
-        let mut provider_names = HashSet::new();
+        let mut channel_names = HashSet::new();
+        for ch in &self.channels {
+            let name = ch.name();
+            if name.trim().is_empty() {
+                return Err(ConfigValidationError::EmptyChannelName);
+            }
+            if !channel_names.insert(name.to_owned()) {
+                return Err(ConfigValidationError::DuplicateChannelName(name.to_owned()));
+            }
+        }
 
+        let mut provider_names = HashSet::new();
         for provider in &self.providers {
             let provider_name = provider.name();
             if provider_name.trim().is_empty() {
@@ -171,6 +181,7 @@ impl MiddlewareConfig {
 pub enum ChannelConfig {
     /// QQ Bot channel using the official QQ Bot API.
     QQ {
+        name: String,
         app_id: String,
         client_secret: String,
     },
@@ -181,6 +192,13 @@ impl ChannelConfig {
     pub fn type_name(&self) -> &str {
         match self {
             ChannelConfig::QQ { .. } => "QQ",
+        }
+    }
+
+    /// Returns the user-defined channel name.
+    pub fn name(&self) -> &str {
+        match self {
+            ChannelConfig::QQ { name, .. } => name,
         }
     }
 }
@@ -259,6 +277,12 @@ impl ProviderConfig {
 /// Errors that can occur during configuration validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigValidationError {
+    #[error("channel name cannot be empty")]
+    EmptyChannelName,
+
+    #[error("duplicate channel name: {0}")]
+    DuplicateChannelName(String),
+
     #[error("provider name cannot be empty")]
     EmptyProviderName,
 
@@ -444,7 +468,7 @@ mod tests {
     #[test]
     fn config_validates_agent_provider_and_model_references() {
         let config: Config = serde_json::from_value(json!({
-            "channels": [{ "type": "QQ", "app_id": "test-app-id", "client_secret": "test-secret" }],
+            "channels": [{ "type": "QQ", "name": "qq-test", "app_id": "test-app-id", "client_secret": "test-secret" }],
             "providers": [
                 {
                     "type": "DeepSeek",

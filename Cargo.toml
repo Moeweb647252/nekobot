@@ -13,6 +13,7 @@ nekobot-mcp = { path = "crates/nekobot-mcp" }
 nekobot-script = { path = "crates/nekobot-script" }
 nekobot-skills = { path = "crates/nekobot-skills" }
 nekobot-tools = { path = "crates/nekobot-tools" }
+nekobot-memory = { path = "crates/nekobot-memory" }
 turso = "0.5"
 serde = "1.0"
 toml = "1.1"
