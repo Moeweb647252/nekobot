@@ -14,8 +14,6 @@ pub struct Session {
 impl Session {
     /// Insert a new session and return it.
     pub async fn create(conn: &Connection, agent_name: impl Into<String>) -> anyhow::Result<Self> {
-        enable_foreign_keys(conn).await?;
-
         let agent_name = agent_name.into();
         conn.execute(
             "INSERT INTO sessions (agent_name) VALUES (?1)",
@@ -69,8 +67,6 @@ impl Session {
         id: i64,
         agent_name: impl Into<String>,
     ) -> anyhow::Result<Option<Self>> {
-        enable_foreign_keys(conn).await?;
-
         let agent_name = agent_name.into();
         let changed = conn
             .execute(
@@ -88,7 +84,6 @@ impl Session {
 
     /// Delete a session by id; returns true if a row was removed.
     pub async fn delete(conn: &Connection, id: i64) -> anyhow::Result<bool> {
-        enable_foreign_keys(conn).await?;
         let changed = conn
             .execute("DELETE FROM sessions WHERE id = ?1", (id,))
             .await?;
@@ -123,13 +118,10 @@ impl Entity for Session {
 
 #[cfg(test)]
 mod tests {
-    use turso::Builder;
-
     use super::*;
 
     async fn connection() -> anyhow::Result<Connection> {
-        let db = Builder::new_local(":memory:").build().await?;
-        let conn = db.connect()?;
+        let conn = crate::entity::test_connection().await?;
         Session::create_table(&conn).await?;
         Ok(conn)
     }

@@ -92,6 +92,7 @@ impl ChannelRuntime {
     }
 
     async fn prepare_tables(&self) -> anyhow::Result<()> {
+        crate::entity::session::Session::create_table(&self.context.app_db).await?;
         Message::create_table(&self.context.app_db).await?;
         ChannelChatAgent::create_table(&self.context.app_db).await?;
         Ok(())

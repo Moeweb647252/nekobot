@@ -39,3 +39,11 @@ macro_rules! collect_rows {
 }
 
 pub(crate) use collect_rows;
+
+/// Shared test helper: creates an in-memory database connection.
+#[cfg(test)]
+pub(crate) async fn test_connection() -> anyhow::Result<turso::Connection> {
+    let db = turso::Builder::new_local(":memory:").build().await?;
+    let conn = db.connect()?;
+    Ok(conn)
+}

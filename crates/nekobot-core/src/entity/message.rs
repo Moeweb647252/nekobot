@@ -4,12 +4,12 @@ use std::fmt::Display;
 
 use turso::Connection;
 
-use crate::entity::{Entity, collect_rows, enable_foreign_keys, session::Session};
+use crate::entity::{Entity, collect_rows, enable_foreign_keys};
 
 /// A single chat message belonging to a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    pub id: String,
+    pub id: i64,
     pub content: String,
     pub reasoning_content: Option<String>,
     pub role: String,
@@ -22,24 +22,19 @@ impl Message {
     /// Insert a new message and return it.
     pub async fn create(
         conn: &Connection,
-        id: impl Into<String>,
         session_id: i64,
         role: impl Into<String>,
         content: impl Into<String>,
         reasoning_content: Option<String>,
         tool_call_id: Option<String>,
     ) -> anyhow::Result<Self> {
-        enable_foreign_keys(conn).await?;
-
-        let id = id.into();
         let role = role.into();
         let content = content.into();
 
         conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, reasoning_content, tool_call_id)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (session_id, role, content, reasoning_content, tool_call_id)
+                VALUES (?1, ?2, ?3, ?4, ?5)",
             (
-                id.as_str(),
                 session_id,
                 role.as_str(),
                 content.as_str(),
@@ -50,7 +45,7 @@ impl Message {
         .await?;
 
         Ok(Self {
-            id,
+            id: conn.last_insert_rowid(),
             content,
             reasoning_content,
             role,
@@ -59,13 +54,13 @@ impl Message {
         })
     }
 
-    /// Look up a message by its text primary key.
-    pub async fn get(conn: &Connection, id: impl AsRef<str>) -> anyhow::Result<Option<Self>> {
+    /// Look up a message by its primary key.
+    pub async fn get(conn: &Connection, id: i64) -> anyhow::Result<Option<Self>> {
         let mut rows = conn
             .query(
                 "SELECT id, content, reasoning_content, role, session_id, tool_call_id
                     FROM messages WHERE id = ?1",
-                (id.as_ref(),),
+                (id,),
             )
             .await?;
 
@@ -102,15 +97,13 @@ impl Message {
     /// Update all fields of a message and return the updated row.
     pub async fn update(
         conn: &Connection,
-        id: impl AsRef<str>,
+        id: i64,
         session_id: i64,
         role: impl Into<String>,
         content: impl Into<String>,
         reasoning_content: Option<String>,
     ) -> anyhow::Result<Option<Self>> {
-        enable_foreign_keys(conn).await?;
-
-        let id = id.as_ref();
+        let id = id;
         let role = role.into();
         let content = content.into();
         let changed = conn
@@ -136,10 +129,9 @@ impl Message {
     }
 
     /// Delete a message by id; returns true if a row was removed.
-    pub async fn delete(conn: &Connection, id: impl AsRef<str>) -> anyhow::Result<bool> {
-        enable_foreign_keys(conn).await?;
+    pub async fn delete(conn: &Connection, id: i64) -> anyhow::Result<bool> {
         let changed = conn
-            .execute("DELETE FROM messages WHERE id = ?1", (id.as_ref(),))
+            .execute("DELETE FROM messages WHERE id = ?1", (id,))
             .await?;
 
         Ok(changed > 0)
@@ -161,17 +153,16 @@ impl Message {
 
 impl Entity for Message {
     async fn create_table(conn: &Connection) -> anyhow::Result<()> {
-        Session::create_table(conn).await?;
         enable_foreign_keys(conn).await?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id INTEGER NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     reasoning_content TEXT,
                     tool_call_id TEXT,
-                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 )",
             (),
         )
@@ -202,13 +193,12 @@ impl Display for Role {
 
 #[cfg(test)]
 mod tests {
-    use turso::Builder;
-
     use super::*;
+    use crate::entity::session::Session;
 
     async fn connection() -> anyhow::Result<Connection> {
-        let db = Builder::new_local(":memory:").build().await?;
-        let conn = db.connect()?;
+        let conn = crate::entity::test_connection().await?;
+        Session::create_table(&conn).await?;
         Message::create_table(&conn).await?;
         Ok(conn)
     }
@@ -225,7 +215,6 @@ mod tests {
 
         let first = Message::create(
             &conn,
-            "msg-1",
             first_session.id,
             Role::User.to_string(),
             "hello",
@@ -235,7 +224,6 @@ mod tests {
         .await?;
         let second = Message::create(
             &conn,
-            "msg-2",
             first_session.id,
             Role::Assistant.to_string(),
             "hi",
@@ -245,7 +233,6 @@ mod tests {
         .await?;
         let third = Message::create(
             &conn,
-            "msg-3",
             second_session.id,
             Role::Custom("tool".to_string()).to_string(),
             "tool output",
@@ -254,7 +241,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(Message::get(&conn, "msg-1").await?, Some(first.clone()));
+        assert_eq!(Message::get(&conn, first.id).await?, Some(first.clone()));
         assert_eq!(
             Message::list(&conn).await?,
             vec![first.clone(), second.clone(), third.clone()]
@@ -266,7 +253,7 @@ mod tests {
 
         let updated = Message::update(
             &conn,
-            "msg-1",
+            first.id,
             second_session.id,
             Role::Assistant.to_string(),
             "updated",
@@ -277,7 +264,7 @@ mod tests {
         assert_eq!(
             updated,
             Message {
-                id: "msg-1".to_string(),
+                id: first.id,
                 content: "updated".to_string(),
                 reasoning_content: Some("updated reasoning".to_string()),
                 role: "assistant".to_string(),
@@ -288,7 +275,7 @@ mod tests {
         assert_eq!(
             Message::update(
                 &conn,
-                "missing",
+                999,
                 second_session.id,
                 Role::User.to_string(),
                 "missing",
@@ -298,9 +285,9 @@ mod tests {
             None
         );
 
-        assert!(Message::delete(&conn, "msg-2").await?);
-        assert!(!Message::delete(&conn, "missing").await?);
-        assert_eq!(Message::get(&conn, "msg-2").await?, None);
+        assert!(Message::delete(&conn, second.id).await?);
+        assert!(!Message::delete(&conn, 999).await?);
+        assert_eq!(Message::get(&conn, second.id).await?, None);
 
         Ok(())
     }
@@ -310,10 +297,10 @@ mod tests {
         let conn = connection().await?;
         let session = session(&conn).await?;
 
+        // FK on INSERT: referencing a nonexistent session fails
         assert!(
             Message::create(
                 &conn,
-                "orphan",
                 999,
                 Role::User.to_string(),
                 "missing session",
@@ -326,7 +313,6 @@ mod tests {
 
         let message = Message::create(
             &conn,
-            "msg-1",
             session.id,
             Role::User.to_string(),
             "hello",
@@ -335,11 +321,11 @@ mod tests {
         )
         .await?;
 
-        assert!(Session::delete(&conn, session.id).await.is_err());
+        // FK on UPDATE: moving to a nonexistent session fails
         assert!(
             Message::update(
                 &conn,
-                "msg-1",
+                message.id,
                 999,
                 Role::Assistant.to_string(),
                 "invalid session",
@@ -349,8 +335,9 @@ mod tests {
             .is_err()
         );
 
-        assert!(Message::delete(&conn, message.id).await?);
+        // ON DELETE CASCADE: deleting the session cascades to messages
         assert!(Session::delete(&conn, session.id).await?);
+        assert_eq!(Message::get(&conn, message.id).await?, None);
 
         Ok(())
     }

@@ -3,7 +3,7 @@
 use nekobot_channel::{ChannelId, ChannelName, ChatId, ChatName, ReplyTarget};
 use turso::Connection;
 
-use crate::entity::{Entity, enable_foreign_keys, session::Session};
+use crate::entity::{Entity, enable_foreign_keys};
 
 macro_rules! string_newtype {
     ($name:ident) => {
@@ -113,8 +113,6 @@ impl ChannelChatAgent {
         conn: &Connection,
         new_mapping: NewChannelChatAgent,
     ) -> anyhow::Result<Self> {
-        enable_foreign_keys(conn).await?;
-
         conn.execute(
             "INSERT INTO channel_chat_agents
                 (channel_id, channel_name, chat_id, chat_name, reply_target, agent_name, session_id)
@@ -193,8 +191,6 @@ impl ChannelChatAgent {
         chat_name: ChatName,
         reply_target: ReplyTarget,
     ) -> anyhow::Result<Option<Self>> {
-        enable_foreign_keys(conn).await?;
-
         let changed = conn
             .execute(
                 "UPDATE channel_chat_agents
@@ -261,7 +257,6 @@ impl ChannelChatAgent {
 
 impl Entity for ChannelChatAgent {
     async fn create_table(conn: &Connection) -> anyhow::Result<()> {
-        Session::create_table(conn).await?;
         enable_foreign_keys(conn).await?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS channel_chat_agents (
@@ -274,7 +269,7 @@ impl Entity for ChannelChatAgent {
                     agent_name TEXT NOT NULL,
                     session_id INTEGER NOT NULL UNIQUE,
                     UNIQUE(channel_id, chat_id, agent_name),
-                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 )",
             (),
         )
@@ -285,13 +280,12 @@ impl Entity for ChannelChatAgent {
 
 #[cfg(test)]
 mod tests {
-    use turso::Builder;
-
     use super::*;
+    use crate::entity::session::Session;
 
     async fn connection() -> anyhow::Result<(Connection, Session)> {
-        let db = Builder::new_local(":memory:").build().await?;
-        let conn = db.connect()?;
+        let conn = crate::entity::test_connection().await?;
+        Session::create_table(&conn).await?;
         ChannelChatAgent::create_table(&conn).await?;
         let session = Session::create(&conn, "Neko").await?;
         Ok((conn, session))

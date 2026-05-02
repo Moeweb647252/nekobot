@@ -2,7 +2,7 @@
 
 use turso::Connection;
 
-use crate::entity::Entity;
+use crate::entity::{Entity, enable_foreign_keys};
 
 /// Persistent login and agent-binding state for a sender within a channel.
 ///
@@ -82,20 +82,19 @@ impl SenderGateState {
 }
 
 impl Entity for SenderGateState {
-    fn create_table(conn: &Connection) -> impl Future<Output = anyhow::Result<()>> {
-        async move {
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS sender_gate_states (
-                    channel_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    is_logged_in INTEGER NOT NULL DEFAULT 0,
-                    connected_agent TEXT,
-                    PRIMARY KEY (channel_id, sender_id)
-                )",
-                (),
-            )
-            .await?;
-            Ok(())
-        }
+    async fn create_table(conn: &Connection) -> anyhow::Result<()> {
+        enable_foreign_keys(conn).await?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sender_gate_states (
+                channel_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                is_logged_in INTEGER NOT NULL DEFAULT 0,
+                connected_agent TEXT,
+                PRIMARY KEY (channel_id, sender_id)
+            )",
+            (),
+        )
+        .await?;
+        Ok(())
     }
 }

@@ -701,6 +701,7 @@ mod tests {
     async fn connection() -> anyhow::Result<(Connection, Session)> {
         let db = Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
+        Session::create_table(&conn).await?;
         Message::create_table(&conn).await?;
         let session = Session::create(&conn, "Neko").await?;
         Ok((conn, session))
