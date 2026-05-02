@@ -164,7 +164,15 @@ impl QQChannel {
     async fn send_with_token(&self, token: &str, request: &Request) -> anyhow::Result<()> {
         match request {
             Request::SendMessage { target, content } => {
-                if let Some(openid) = parse_c2c_target(target) {
+                if is_markdown(content) {
+                    if let Some(openid) = parse_c2c_target(target) {
+                        send_c2c_markdown(&self.http, token, openid, content).await?;
+                    } else if let Some(group_openid) = parse_group_target(target) {
+                        send_group_markdown(&self.http, token, group_openid, content).await?;
+                    } else {
+                        anyhow::bail!("unknown QQ target format: {target}");
+                    }
+                } else if let Some(openid) = parse_c2c_target(target) {
                     send_c2c_message(&self.http, token, openid, content).await?;
                 } else if let Some(group_openid) = parse_group_target(target) {
                     send_group_message(&self.http, token, group_openid, content).await?;
@@ -672,6 +680,70 @@ async fn send_group_message(
         .send()
         .await
         .context("failed to send group message")?;
+
+    if resp.status().as_u16() == 401 {
+        return Err(anyhow::Error::new(TokenExpiredError));
+    }
+    Ok(())
+}
+
+/// Detect if content contains markdown syntax that would benefit from `msg_type=2`.
+fn is_markdown(content: &str) -> bool {
+    content.contains("##")
+        || content.contains("**")
+        || content.starts_with("# ")
+        || content.contains("\n- ")
+        || content.contains("\n1. ")
+        || content.contains("`")
+}
+
+/// Send a C2C markdown message.
+///
+/// `POST /v2/users/{openid}/messages` with `msg_type=2`.
+async fn send_c2c_markdown(
+    http: &Client,
+    token: &str,
+    openid: &str,
+    content: &str,
+) -> anyhow::Result<()> {
+    let resp = http
+        .post(format!("{API_BASE}/v2/users/{openid}/messages"))
+        .header("Authorization", format!("QQBot {token}"))
+        .json(&serde_json::json!({
+            "msg_type": 2,
+            "markdown": { "content": content },
+            "msg_seq": 1,
+        }))
+        .send()
+        .await
+        .context("failed to send C2C markdown")?;
+
+    if resp.status().as_u16() == 401 {
+        return Err(anyhow::Error::new(TokenExpiredError));
+    }
+    Ok(())
+}
+
+/// Send a group markdown message.
+///
+/// `POST /v2/groups/{group_openid}/messages` with `msg_type=2`.
+async fn send_group_markdown(
+    http: &Client,
+    token: &str,
+    group_openid: &str,
+    content: &str,
+) -> anyhow::Result<()> {
+    let resp = http
+        .post(format!("{API_BASE}/v2/groups/{group_openid}/messages"))
+        .header("Authorization", format!("QQBot {token}"))
+        .json(&serde_json::json!({
+            "msg_type": 2,
+            "markdown": { "content": content },
+            "msg_seq": 1,
+        }))
+        .send()
+        .await
+        .context("failed to send group markdown")?;
 
     if resp.status().as_u16() == 401 {
         return Err(anyhow::Error::new(TokenExpiredError));
