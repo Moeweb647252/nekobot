@@ -147,7 +147,7 @@ impl<S> NekoBot<S> {
 
     async fn init_database(&self) -> Result<turso::Connection, anyhow::Error> {
         use crate::entity::{
-            Entity, channel_chat_agent::ChannelChatAgent, channel_credential, message::Message,
+            Entity, channel_chat_agent::ChannelChatAgent, message::Message,
             persona, sender_gate_state::SenderGateState, session::Session,
         };
 
@@ -160,7 +160,6 @@ impl<S> NekoBot<S> {
         Message::create_table(&conn).await?;
         ChannelChatAgent::create_table(&conn).await?;
         SenderGateState::create_table(&conn).await?;
-        channel_credential::create_table(&conn).await?;
         persona::create_table(&conn).await?;
         Ok(conn)
     }

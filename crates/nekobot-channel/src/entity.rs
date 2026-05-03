@@ -24,8 +24,7 @@ pub async fn get(conn: &Connection, channel_name: &str) -> anyhow::Result<Option
         )
         .await?;
     if let Some(row) = rows.next().await? {
-        let creds: String = row.get(0)?;
-        Ok(Some(creds))
+        Ok(Some(row.get(0)?))
     } else {
         Ok(None)
     }
@@ -71,24 +70,14 @@ mod tests {
         let c = conn().await;
         create_table(&c).await.unwrap();
 
-        // Get nonexistent
         assert!(get(&c, "test").await.unwrap().is_none());
 
-        // Upsert
         upsert(&c, "test", r#"{"token":"abc"}"#).await.unwrap();
-        assert_eq!(
-            get(&c, "test").await.unwrap().unwrap(),
-            r#"{"token":"abc"}"#
-        );
+        assert_eq!(get(&c, "test").await.unwrap().unwrap(), r#"{"token":"abc"}"#);
 
-        // Upsert replaces
         upsert(&c, "test", r#"{"token":"xyz"}"#).await.unwrap();
-        assert_eq!(
-            get(&c, "test").await.unwrap().unwrap(),
-            r#"{"token":"xyz"}"#
-        );
+        assert_eq!(get(&c, "test").await.unwrap().unwrap(), r#"{"token":"xyz"}"#);
 
-        // Delete
         assert!(delete(&c, "test").await.unwrap());
         assert!(!delete(&c, "test").await.unwrap());
         assert!(get(&c, "test").await.unwrap().is_none());

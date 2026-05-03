@@ -38,8 +38,19 @@ async fn main() {
                 app_id.clone(),
                 client_secret.clone(),
             )) as Box<dyn nekobot_channel::Channel>),
+            _ => unreachable!(),
         })
         .expect("Failed to register QQ channel");
+
+    bot.channel_registry_mut()
+        .register("WeiXin", |cfg| match cfg {
+            nekobot_core::config::ChannelConfig::WeiXin { name, base_url, .. } => {
+                Ok(Box::new(nekobot_channel::channel::WeiXinChannel::new(name.clone(), base_url.clone()))
+                    as Box<dyn nekobot_channel::Channel>)
+            }
+            _ => unreachable!(),
+        })
+        .expect("Failed to register WeiXin channel");
 
     // Register concrete provider implementations
     nekobot_provider::register_providers(bot.provider_registry_mut())

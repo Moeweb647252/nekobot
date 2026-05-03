@@ -268,7 +268,7 @@ impl Runtime for ChannelRuntime {
 
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(64);
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(64);
-        let channel_info = self.channel.register(event_sender).await?;
+        let channel_info = self.channel.register(event_sender, Some(self.context.app_db.clone())).await?;
 
         loop {
             tokio::select! {
@@ -364,6 +364,7 @@ mod tests {
         async fn register(
             &self,
             sender: tokio::sync::mpsc::Sender<Event>,
+            _app_db: Option<turso::Connection>,
         ) -> anyhow::Result<ChannelInfo> {
             *self.state.event_sender.lock().await = Some(sender);
             self.state.registered.notify_waiters();

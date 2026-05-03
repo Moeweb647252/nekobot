@@ -334,7 +334,7 @@ impl Channel for QQChannel {
     /// The WebSocket event loop runs in a background tokio task. Incoming
     /// messages are forwarded through `event_tx` as [`Event::IncomingMessage`].
     /// Returns [`ChannelInfo`] immediately without waiting for connection.
-    async fn register(&self, event_tx: mpsc::Sender<Event>) -> anyhow::Result<ChannelInfo> {
+    async fn register(&self, event_tx: mpsc::Sender<Event>, _app_db: Option<turso::Connection>) -> anyhow::Result<ChannelInfo> {
         let state = self.state.clone();
         let app_id = self.app_id.clone();
         let client_secret = self.client_secret.clone();

@@ -4,6 +4,7 @@
 //! domain types for events, requests, and entity identifiers.
 
 pub mod channel;
+pub mod entity;
 mod types;
 
 pub use types::{ChannelId, ChannelName, ChatId, ChatName, ReplyTarget, SenderId, SenderName};
@@ -69,6 +70,7 @@ pub trait Channel: Send + Sync {
     async fn register(
         &self,
         sender: tokio::sync::mpsc::Sender<Event>,
+        app_db: Option<turso::Connection>,
     ) -> anyhow::Result<ChannelInfo>;
 
     /// Send a request (message, typing indicator, etc.) to the platform.

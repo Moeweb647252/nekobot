@@ -185,6 +185,16 @@ pub enum ChannelConfig {
         app_id: String,
         client_secret: String,
     },
+    /// WeiXin channel using the openclaw-weixin gateway.
+    WeiXin {
+        name: String,
+        #[serde(default = "default_wx_base_url")]
+        base_url: String,
+    },
+}
+
+fn default_wx_base_url() -> String {
+    "https://ilinkai.weixin.qq.com".to_owned()
 }
 
 impl ChannelConfig {
@@ -192,13 +202,14 @@ impl ChannelConfig {
     pub fn type_name(&self) -> &str {
         match self {
             ChannelConfig::QQ { .. } => "QQ",
+            ChannelConfig::WeiXin { .. } => "WeiXin",
         }
     }
 
     /// Returns the user-defined channel name.
     pub fn name(&self) -> &str {
         match self {
-            ChannelConfig::QQ { name, .. } => name,
+            ChannelConfig::QQ { name, .. } | ChannelConfig::WeiXin { name, .. } => name,
         }
     }
 }
