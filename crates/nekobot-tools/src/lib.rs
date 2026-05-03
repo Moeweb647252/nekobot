@@ -2,6 +2,7 @@
 
 mod bash;
 mod search;
+mod sleep;
 mod time;
 
 use std::sync::{Arc, RwLock};
@@ -86,6 +87,16 @@ impl Middleware for ToolsMiddleware {
             let tool = Arc::new(bash::BashTool {
                 timeout_secs: self.config.bash_timeout_secs,
             });
+            specs.push(ToolSpec {
+                name: tool.name().to_owned(),
+                description: tool.description().to_owned(),
+                parameters_schema: tool.parameters_schema(),
+            });
+            ctx.tool_registry().register(tool)?;
+        }
+
+        if self.enabled("sleep") {
+            let tool = Arc::new(sleep::SleepTool);
             specs.push(ToolSpec {
                 name: tool.name().to_owned(),
                 description: tool.description().to_owned(),
