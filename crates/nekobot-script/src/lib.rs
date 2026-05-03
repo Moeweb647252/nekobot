@@ -16,11 +16,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// Deserialized from `MiddlewareConfig.data`.
-///
-/// ```yaml
-/// - name: script
-///   timeout_ms: 5000
-/// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScriptConfig {
     /// Max JS execution time in milliseconds. Default 5000.
@@ -28,9 +23,7 @@ pub struct ScriptConfig {
     pub timeout_ms: u64,
 }
 
-fn default_timeout() -> u64 {
-    5000
-}
+fn default_timeout() -> u64 { 5000 }
 
 /// Middleware that registers the `eval_ts` tool.
 pub struct ScriptMiddleware {
@@ -68,9 +61,7 @@ impl Middleware for ScriptMiddleware {
     }
 
     async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
-        let tool = Arc::new(EvalTsTool {
-            timeout_ms: self.timeout_ms,
-        });
+        let tool = Arc::new(EvalTsTool { timeout_ms: self.timeout_ms });
 
         let spec = ToolSpec {
             name: tool.name().to_owned(),
@@ -89,9 +80,7 @@ impl Middleware for ScriptMiddleware {
 }
 
 /// Tool that transpiles TypeScript → JavaScript via SWC and executes it via Boa.
-struct EvalTsTool {
-    timeout_ms: u64,
-}
+struct EvalTsTool { timeout_ms: u64 }
 
 #[async_trait::async_trait]
 impl Tool for EvalTsTool {
@@ -135,9 +124,10 @@ impl Tool for EvalTsTool {
                 .map_err(|_| ToolError::Execution("eval_ts timed out".to_owned()))?
         } else {
             fut.await
-        };
+        }
+        .map_err(ToolError::Execution)?;
 
-        Ok(Value::String(result.map_err(ToolError::Execution)?))
+        Ok(Value::String(result))
     }
 }
 

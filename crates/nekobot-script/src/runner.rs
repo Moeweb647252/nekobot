@@ -6,8 +6,9 @@ use boa_runtime::fetch::BlockingReqwestFetcher;
 
 /// Execute JavaScript code in a fresh Boa context with Web APIs.
 ///
-/// Runs on a blocking thread. The Boa `Context` (`!Send`) is created inside
-/// the closure so the closure itself is `Send`.
+/// Runs on a blocking thread because Boa's `Context` is `!Send` and
+/// `JsPromise` is private (preventing native async polling). The async
+/// API enables timeout via `tokio::time::timeout`.
 ///
 /// Provides `fetch()`, `console`, `URL`, `TextEncoder`, `TextDecoder`,
 /// `setTimeout`, and `structuredClone`.

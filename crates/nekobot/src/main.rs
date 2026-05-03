@@ -79,10 +79,8 @@ async fn main() {
         .register("script", |config| {
             let cfg: nekobot_script::ScriptConfig =
                 serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
-            Ok(
-                std::sync::Arc::new(nekobot_script::ScriptMiddleware::from_config(cfg))
-                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>,
-            )
+            Ok(std::sync::Arc::new(nekobot_script::ScriptMiddleware::from_config(cfg))
+                as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
         })
         .expect("Failed to register script middleware");
 
