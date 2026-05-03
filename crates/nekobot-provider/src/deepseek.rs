@@ -213,7 +213,9 @@ impl Provider for DeepSeekProvider {
             return Err(ProviderError::Remote(response_error_message(&response)));
         }
 
-        Ok(parse_response(&response))
+        let result = parse_response(&response);
+        debug!("parsed {} tool calls: {:?}", result.tool_calls.len(), result.tool_calls.iter().map(|tc| &tc.function.name).collect::<Vec<_>>());
+        Ok(result)
     }
 
     /// Sends a streaming chat completion request, emitting deltas via the given channel
@@ -418,7 +420,12 @@ fn parse_response(response: &Value) -> ChatResponse {
 
     let tool_calls = message
         .and_then(|message| message.get("tool_calls"))
-        .map(|v| serde_json::from_value::<Vec<ToolCall>>(v.clone()).unwrap_or_default())
+        .map(|v| {
+            serde_json::from_value::<Vec<ToolCall>>(v.clone()).unwrap_or_else(|e| {
+                tracing::warn!(target: "deepseek", "failed to parse tool_calls: {e}, raw: {v}");
+                Vec::new()
+            })
+        })
         .unwrap_or_default();
 
     ChatResponse {

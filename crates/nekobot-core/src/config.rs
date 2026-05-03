@@ -152,7 +152,12 @@ pub struct AgentConfig {
     /// Max number of past messages to include in the provider request (default: unbounded).
     #[serde(default)]
     pub max_message_count: Option<usize>,
+    /// Max tool call iterations per interaction (default: 10).
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
 }
+
+fn default_max_tool_iterations() -> usize { 10 }
 
 /// Configuration for a single middleware, identified by name with additional
 /// properties flattened from the serialized form.

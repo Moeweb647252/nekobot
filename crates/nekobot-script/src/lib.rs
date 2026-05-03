@@ -100,8 +100,9 @@ impl Tool for EvalTsTool {
     }
 
     fn description(&self) -> &str {
-        "Execute TypeScript code in a sandboxed JavaScript runtime. \
+        "Execute TypeScript code in a Boajs runtime. \
          The code must use strict types (no `any`). \
+         fetch, console and other Web APIs supported by boa_runtime are available. \
          Returns the result of the last expression as a string."
     }
 
@@ -127,12 +128,16 @@ impl Tool for EvalTsTool {
         let js_code = ts_check::transpile(code)
             .map_err(|e| ToolError::Execution(format!("TypeScript error: {e}")))?;
 
-        // TODO: use timeout_ms with a spawned task + timeout wrapper
-        let _ = self.timeout_ms;
+        let fut = runner::execute(js_code);
+        let result = if self.timeout_ms > 0 {
+            tokio::time::timeout(std::time::Duration::from_millis(self.timeout_ms), fut)
+                .await
+                .map_err(|_| ToolError::Execution("eval_ts timed out".to_owned()))?
+        } else {
+            fut.await
+        };
 
-        let result = runner::execute(&js_code).map_err(ToolError::Execution)?;
-
-        Ok(Value::String(result))
+        Ok(Value::String(result.map_err(ToolError::Execution)?))
     }
 }
 
@@ -162,28 +167,34 @@ mod tests {
         assert!(err.to_string().contains("`any` type is not allowed"));
     }
 
-    #[test]
-    fn runner_executes_js() {
-        let result = runner::execute("1 + 2").expect("should execute");
+    #[tokio::test]
+    async fn runner_executes_js() {
+        let result = runner::execute("1 + 2".to_owned())
+            .await
+            .expect("should execute");
         assert_eq!(result, "3");
     }
 
-    #[test]
-    fn runner_executes_string() {
-        let result = runner::execute("'hello'").expect("should execute");
+    #[tokio::test]
+    async fn runner_executes_string() {
+        let result = runner::execute("'hello'".to_owned())
+            .await
+            .expect("should execute");
         assert_eq!(result, "hello");
     }
 
-    #[test]
-    fn runner_reports_js_error() {
-        let err = runner::execute("throw new Error('boom')").expect_err("should fail");
+    #[tokio::test]
+    async fn runner_reports_js_error() {
+        let err = runner::execute("throw new Error('boom')".to_owned())
+            .await
+            .expect_err("should fail");
         assert!(err.contains("boom") || err.contains("JS execution error"));
     }
 
-    #[test]
-    fn eval_ts_end_to_end() {
+    #[tokio::test]
+    async fn eval_ts_end_to_end() {
         let js = ts_check::transpile("40 + 2").expect("transpile");
-        let result = runner::execute(&js).expect("execute");
+        let result = runner::execute(js).await.expect("execute");
         assert_eq!(result, "42");
     }
 }

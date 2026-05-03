@@ -114,6 +114,7 @@ pub struct AgentSessionConfig {
     pub provider: Arc<dyn Provider>,
     pub model_options: ModelOptions,
     pub max_message_count: Option<usize>,
+    pub max_tool_iterations: usize,
 }
 
 impl AgentSessionConfig {
@@ -131,6 +132,7 @@ impl AgentSessionConfig {
             model_options,
             middlewares,
             agent.max_message_count,
+            agent.max_tool_iterations,
         ))
     }
 
@@ -141,6 +143,7 @@ impl AgentSessionConfig {
         model_options: ModelOptions,
         middlewares: Vec<Arc<dyn Middleware>>,
         max_message_count: Option<usize>,
+        max_tool_iterations: usize,
     ) -> Self {
         Self {
             agent_name: agent_name.into(),
@@ -148,6 +151,7 @@ impl AgentSessionConfig {
             provider,
             model_options,
             max_message_count,
+            max_tool_iterations,
         }
     }
 }
@@ -177,6 +181,7 @@ pub struct AgentSession {
     pub(crate) model_options: ModelOptions,
     pub(crate) tool_registry: Arc<ToolRegistry>,
     pub(crate) max_message_count: Option<usize>,
+    pub(crate) max_tool_iterations: usize,
 }
 
 impl AgentSession {
@@ -190,6 +195,7 @@ impl AgentSession {
             model_options: config.model_options,
             tool_registry: Arc::new(ToolRegistry::new()),
             max_message_count: config.max_message_count,
+            max_tool_iterations: config.max_tool_iterations,
         }
     }
 
@@ -254,7 +260,7 @@ impl AgentSession {
         ctx: Context,
         mut request: ChatRequest,
     ) -> anyhow::Result<ChatResponse> {
-        const MAX_TOOL_ITERATIONS: usize = 10;
+        let max_iterations = self.max_tool_iterations;
 
         let mut first_iteration = true;
         let mut iteration = 0;
@@ -291,13 +297,18 @@ impl AgentSession {
             };
 
             // No more tool calls → final response
+            debug!(target: "agent", "provider returned {} tool_calls: {:?}",
+                response.tool_calls.len(),
+                response.tool_calls.iter().map(|tc| &tc.function.name).collect::<Vec<_>>());
             if response.tool_calls.is_empty() {
+                debug!(target: "agent", "no tool calls, returning final response");
                 self.run_after_chat_hooks(&ctx, &mut response, 0).await;
                 return Ok(response);
             }
 
             // Too many iterations
-            if iteration >= MAX_TOOL_ITERATIONS {
+            if iteration >= max_iterations {
+                debug!(target: "agent", "max iterations reached, returning response");
                 return Ok(response);
             }
 
@@ -312,6 +323,7 @@ impl AgentSession {
             });
 
             // Execute tools and add results
+            debug!(target: "agent", "executing {} tool(s)...", response.tool_calls.len());
             for tc in &response.tool_calls {
                 let tool = ctx.tool_registry().get(&tc.function.name)?;
                 let result = match tool {
@@ -746,6 +758,7 @@ mod tests {
             model: "deepseek-v4-pro".to_owned(),
             middlewares: Vec::new(),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
 
         let session_config = AgentSessionConfig::from_agent_config(
@@ -810,6 +823,7 @@ mod tests {
             model: "deepseek-v4-pro".to_owned(),
             middlewares: vec![serde_json::from_value(json!({ "name": "broken" })).unwrap()],
             max_message_count: None,
+            max_tool_iterations: 10,
         };
 
         let result = AgentSessionConfig::from_agent_config(
@@ -859,6 +873,7 @@ mod tests {
             model_options: ModelOptions::default(),
             tool_registry: Arc::clone(&tool_registry),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
 
         let response = agent
@@ -892,6 +907,7 @@ mod tests {
             model_options: ModelOptions::default(),
             tool_registry: Arc::clone(&tool_registry),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
 
         agent
@@ -928,6 +944,7 @@ mod tests {
             model_options: ModelOptions::default(),
             tool_registry: Arc::new(ToolRegistry::new()),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
         let handle = agent.start(conn.clone(), output_sender).await?;
@@ -974,6 +991,7 @@ mod tests {
             model_options: ModelOptions::default(),
             tool_registry: Arc::new(ToolRegistry::new()),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
         let _handle = agent.start(conn.clone(), output_sender).await?;
@@ -1017,6 +1035,7 @@ mod tests {
             },
             tool_registry: Arc::clone(&tool_registry),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
         let ctx = Context::new("Neko", 1, event_sender, tool_registry, test_db());
 
@@ -1071,6 +1090,7 @@ mod tests {
             },
             tool_registry: Arc::clone(&tool_registry),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
 
         agent
@@ -1124,6 +1144,7 @@ mod tests {
             model_options: ModelOptions::default(),
             tool_registry: Arc::clone(&tool_registry),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
 
         let result = agent

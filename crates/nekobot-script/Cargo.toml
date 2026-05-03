@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 nekobot-core = { workspace = true }
 boa_engine = "0.21"
+boa_runtime = { version = "0.21", features = ["all"] }
 swc_core = { version = "65", features = [
     "ecma_parser",
     "ecma_ast",
@@ -18,4 +19,5 @@ anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tracing.workspace = true

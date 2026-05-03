@@ -1,19 +1,44 @@
-//! JavaScript execution via Boa engine.
+//! JavaScript execution via Boa engine with Web API runtime.
 
 use boa_engine::{Context, Source};
+use boa_runtime::extensions::{ConsoleExtension, FetchExtension};
+use boa_runtime::fetch::BlockingReqwestFetcher;
 
-/// Execute JavaScript code in a fresh Boa context.
+/// Execute JavaScript code in a fresh Boa context with Web APIs.
 ///
-/// Creates a new [`Context`] per call to avoid `!Send` / `!Sync` threading
-/// issues.  Boa contexts are lightweight enough for this to be practical.
-pub fn execute(js_code: &str) -> Result<String, String> {
-    let mut context = Context::default();
+/// Runs on a blocking thread. The Boa `Context` (`!Send`) is created inside
+/// the closure so the closure itself is `Send`.
+///
+/// Provides `fetch()`, `console`, `URL`, `TextEncoder`, `TextDecoder`,
+/// `setTimeout`, and `structuredClone`.
+pub async fn execute(js_code: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut context = Context::default();
 
-    match context.eval(Source::from_bytes(js_code)) {
-        Ok(res) => res
+        boa_runtime::register(
+            (
+                ConsoleExtension::default(),
+                FetchExtension(BlockingReqwestFetcher::default()),
+            ),
+            None,
+            &mut context,
+        )
+        .inspect_err(|e| tracing::warn!("Failed to register Web API runtime: {e}"))
+        .ok();
+
+        let result = context
+            .eval(Source::from_bytes(&js_code))
+            .map_err(|e| format!("JS execution error: {e}"))?;
+
+        context
+            .run_jobs()
+            .map_err(|e| format!("JS job error: {e}"))?;
+
+        result
             .to_string(&mut context)
             .map(|s| s.to_std_string_escaped())
-            .map_err(|e| format!("failed to stringify result: {e}")),
-        Err(e) => Err(format!("JS execution error: {e}")),
-    }
+            .map_err(|e| format!("failed to stringify result: {e}"))
+    })
+    .await
+    .map_err(|e| format!("eval_ts panicked: {e}"))?
 }

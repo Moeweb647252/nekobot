@@ -426,6 +426,7 @@ mod tests {
             model: "test-model".to_owned(),
             middlewares: Vec::new(),
             max_message_count: None,
+            max_tool_iterations: 10,
         };
         let middleware_registry = crate::agent::MiddlewareRegistry::new();
         let agent_session_config = AgentSessionConfig::from_agent_config(

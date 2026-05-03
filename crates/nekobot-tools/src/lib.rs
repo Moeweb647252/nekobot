@@ -1,6 +1,7 @@
-//! Built-in utility tools — provides bash and current_time tools.
+//! Built-in utility tools — provides bash, current_time, and search tools.
 
 mod bash;
+mod search;
 mod time;
 
 use std::sync::{Arc, RwLock};
@@ -21,6 +22,9 @@ pub struct ToolsConfig {
     /// Timeout for bash commands in seconds. Default 30.
     #[serde(default = "default_timeout")]
     pub bash_timeout_secs: u64,
+    /// SearXNG instance URL. When set and "search" is in enabled, registers the search tool.
+    #[serde(default)]
+    pub searx_url: Option<String>,
     /// List of tool names to enable. Default: all.
     #[serde(default = "default_enabled")]
     pub enabled: Vec<String>,
@@ -98,6 +102,18 @@ impl Middleware for ToolsMiddleware {
                 parameters_schema: tool.parameters_schema(),
             });
             ctx.tool_registry().register(tool)?;
+        }
+
+        if self.enabled("search") {
+            if let Some(ref url) = self.config.searx_url {
+                let tool = Arc::new(search::SearchTool::new(url.clone()));
+                specs.push(ToolSpec {
+                    name: tool.name().to_owned(),
+                    description: tool.description().to_owned(),
+                    parameters_schema: tool.parameters_schema(),
+                });
+                ctx.tool_registry().register(tool)?;
+            }
         }
 
         Ok(())
