@@ -24,6 +24,9 @@ pub struct ToolsConfig {
     #[serde(default = "default_timeout")]
     pub bash_timeout_secs: u64,
     /// SearXNG instance URL. When set and "search" is in enabled, registers the search tool.
+    /// Working directory to restrict bash commands to. Default: current dir.
+    #[serde(default)]
+    pub bash_workdir: Option<String>,
     #[serde(default)]
     pub searx_url: Option<String>,
     /// List of tool names to enable. Default: all.
@@ -86,6 +89,7 @@ impl Middleware for ToolsMiddleware {
         if self.enabled("bash") {
             let tool = Arc::new(bash::BashTool {
                 timeout_secs: self.config.bash_timeout_secs,
+                workdir: self.config.bash_workdir.clone(),
             });
             specs.push(ToolSpec {
                 name: tool.name().to_owned(),

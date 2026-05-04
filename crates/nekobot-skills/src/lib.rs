@@ -113,7 +113,8 @@ impl Middleware for SkillMiddleware {
     ) -> Result<MiddlewareFlow, anyhow::Error> {
         let prompt = self.build_system_prompt();
         if !prompt.is_empty() {
-            request.system_prompt = Some(prompt);
+            let existing = request.system_prompt.take().unwrap_or_default();
+            request.system_prompt = Some(if existing.is_empty() { prompt } else { format!("{existing}\n\n{prompt}") });
         }
         let specs = self
             .tool_specs

@@ -107,11 +107,9 @@ impl SessionGate {
             .upsert(&self.conn)
             .await?;
 
+            let agents = if self.valid_agents.is_empty() { "（无可用 agent）".to_owned() } else { self.valid_agents.join(", ") };
             Ok(InterceptResult::Reject {
-                reply: format!(
-                    "登录成功，请 /connect <agent> 选择要连接的 agent。可用: {}",
-                    self.valid_agents.join(", ")
-                ),
+                reply: format!("登录成功，请 /connect <agent> 选择要连接的 agent。可用: {agents}"),
             })
         } else {
             Ok(InterceptResult::Reject {
@@ -127,11 +125,9 @@ impl SessionGate {
         agent: &str,
     ) -> anyhow::Result<InterceptResult> {
         if !self.valid_agents.iter().any(|a| a == agent) {
+            let agents = self.valid_agents.join(", ");
             return Ok(InterceptResult::Reject {
-                reply: format!(
-                    "未知 agent: {agent}，可用: {}",
-                    self.valid_agents.join(", ")
-                ),
+                reply: format!("未知 agent: {agent}，可用: {agents}"),
             });
         }
 

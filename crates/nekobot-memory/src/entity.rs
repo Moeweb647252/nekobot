@@ -4,7 +4,7 @@ use turso::Connection;
 
 /// A single memory entry with optional vector embedding.
 #[derive(Debug, Clone)]
-pub struct MemoryRow {
+pub(crate) struct MemoryRow {
     pub id: i64,
     pub content: String,
 }

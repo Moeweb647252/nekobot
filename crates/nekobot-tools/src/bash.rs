@@ -10,6 +10,7 @@ use crate::MAX_OUTPUT_BYTES;
 
 pub struct BashTool {
     pub timeout_secs: u64,
+    pub workdir: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -53,8 +54,8 @@ impl nekobot_core::agent::tool::Tool for BashTool {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        if let Some(workdir) = args.get("workdir").and_then(Value::as_str) {
-            cmd.current_dir(workdir);
+        if let Some(wd) = args.get("workdir").and_then(Value::as_str).or(self.workdir.as_deref()) {
+            cmd.current_dir(wd);
         }
 
         let child = cmd

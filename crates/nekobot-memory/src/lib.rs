@@ -94,20 +94,22 @@ impl Middleware for MemoryMiddleware {
         let ec = self.embed_client();
         let db = self.conn()?;
 
+        let agent = ctx.agent_name.clone();
         let remember = Arc::new(RememberTool {
             app_db: db.clone(),
             embed_client: ec.clone(),
-            max_results: self.config.max_results,
+            agent_name: agent.clone(),
         });
         let search = Arc::new(SearchMemoryTool {
             app_db: db.clone(),
             embed_client: ec.clone(),
+            agent_name: agent.clone(),
             max_results: self.config.max_results,
         });
         let forget = Arc::new(ForgetTool {
             app_db: db,
             embed_client: ec,
-            max_results: self.config.max_results,
+            agent_name: agent,
         });
 
         let mut specs = self
@@ -140,7 +142,7 @@ impl Middleware for MemoryMiddleware {
 struct RememberTool {
     app_db: Connection,
     embed_client: EmbeddingClient,
-    max_results: usize,
+    agent_name: String,
 }
 
 #[async_trait::async_trait]
@@ -174,7 +176,7 @@ impl Tool for RememberTool {
             .map_err(|e| ToolError::Execution(format!("embed: {e}")))?;
 
         // Dedup check
-        let existing = entity::search(&self.app_db, "", &embedding, 1)
+        let existing = entity::search(&self.app_db, &self.agent_name, &embedding, 1)
             .await
             .map_err(|e| ToolError::Execution(format!("search: {e}")))?;
         if let Some(row) = existing.first() {
@@ -184,7 +186,7 @@ impl Tool for RememberTool {
             )));
         }
 
-        entity::insert(&self.app_db, "", content, &embedding)
+        entity::insert(&self.app_db, &self.agent_name, content, &embedding)
             .await
             .map_err(|e| ToolError::Execution(format!("insert: {e}")))?;
 
@@ -196,6 +198,7 @@ impl Tool for RememberTool {
 struct SearchMemoryTool {
     app_db: Connection,
     embed_client: EmbeddingClient,
+    agent_name: String,
     max_results: usize,
 }
 
@@ -228,7 +231,7 @@ impl Tool for SearchMemoryTool {
             .await
             .map_err(|e| ToolError::Execution(format!("embed: {e}")))?;
 
-        let results = entity::search(&self.app_db, "", &embedding, self.max_results)
+        let results = entity::search(&self.app_db, &self.agent_name, &embedding, self.max_results)
             .await
             .map_err(|e| ToolError::Execution(format!("search: {e}")))?;
 
@@ -244,7 +247,7 @@ impl Tool for SearchMemoryTool {
 struct ForgetTool {
     app_db: Connection,
     embed_client: EmbeddingClient,
-    max_results: usize,
+    agent_name: String,
 }
 
 #[async_trait::async_trait]
@@ -276,7 +279,7 @@ impl Tool for ForgetTool {
             .await
             .map_err(|e| ToolError::Execution(format!("embed: {e}")))?;
 
-        let results = entity::search(&self.app_db, "", &embedding, 1)
+        let results = entity::search(&self.app_db, &self.agent_name, &embedding, 1)
             .await
             .map_err(|e| ToolError::Execution(format!("search: {e}")))?;
 

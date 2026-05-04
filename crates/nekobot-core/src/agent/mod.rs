@@ -568,7 +568,9 @@ impl AgentSession {
         applied_middleware_count: usize,
     ) {
         for middleware in self.middlewares[..applied_middleware_count].iter().rev() {
-            let _ = middleware.on_error(ctx, error).await;
+            if let Err(e) = middleware.on_error(ctx, error).await {
+                tracing::error!(target: "agent", "on_error hook failed in {}: {e:#}", middleware.name());
+            }
         }
     }
 }

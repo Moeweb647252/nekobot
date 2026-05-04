@@ -16,39 +16,25 @@ pub mod runtime;
 pub mod session;
 
 /// Top-level application struct.
-///
-/// Created via [`NekoBot::new`] with a [`config::Config`], then configured
-/// with middleware, provider, and channel registrations before calling
-/// [`run`](NekoBot::run).
-///
-/// The type parameter `S` allows injecting user-defined shared state
-/// (e.g. database pools, external service handles) via [`with_state`](NekoBot::with_state).
-pub struct NekoBot<S = ()> {
+pub struct NekoBot {
     config: config::Config,
-    state: S,
     middleware_registry: agent::MiddlewareRegistry,
     provider_registry: provider::ProviderRegistry,
     channel_registry: channel_registry::ChannelRegistry,
 }
 
-impl NekoBot<()> {
+impl NekoBot {
     /// Create a new [`NekoBot`] from a parsed [`config::Config`].
     pub fn new(config: config::Config) -> Self {
         Self {
             config,
-            state: (),
             middleware_registry: agent::MiddlewareRegistry::new(),
             provider_registry: provider::ProviderRegistry::new(),
             channel_registry: channel_registry::ChannelRegistry::new(),
         }
     }
-}
 
-impl<S> NekoBot<S> {
     /// Register a middleware factory by name.
-    ///
-    /// The factory closure receives a [`config::MiddlewareConfig`] and should
-    /// return an `Arc<dyn Middleware>`.
     pub fn with_middleware<F>(mut self, name: impl Into<String>, create: F) -> anyhow::Result<Self>
     where
         F: Fn(
@@ -63,9 +49,6 @@ impl<S> NekoBot<S> {
     }
 
     /// Register a provider factory by name.
-    ///
-    /// The factory closure receives a [`config::ProviderConfig`] and should
-    /// return an `Arc<dyn Provider>`.
     pub fn with_provider<F>(mut self, name: impl Into<String>, create: F) -> anyhow::Result<Self>
     where
         F: Fn(&config::ProviderConfig) -> anyhow::Result<std::sync::Arc<dyn provider::Provider>>
@@ -78,9 +61,6 @@ impl<S> NekoBot<S> {
     }
 
     /// Register a channel factory by name.
-    ///
-    /// The factory closure receives a [`config::ChannelConfig`] and should
-    /// return a `Box<dyn Channel>`.
     pub fn with_channel<F>(mut self, name: impl Into<String>, create: F) -> anyhow::Result<Self>
     where
         F: Fn(&config::ChannelConfig) -> anyhow::Result<Box<dyn Channel>> + Send + Sync + 'static,
@@ -89,49 +69,12 @@ impl<S> NekoBot<S> {
         Ok(self)
     }
 
-    /// Replace the user-defined state with a new value of a different type.
-    ///
-    /// This consumes the current `NekoBot<S>` and returns `NekoBot<T>`,
-    /// preserving config and registries.
-    pub fn with_state<T>(self, state: T) -> NekoBot<T> {
-        NekoBot {
-            config: self.config,
-            state,
-            middleware_registry: self.middleware_registry,
-            provider_registry: self.provider_registry,
-            channel_registry: self.channel_registry,
-        }
-    }
-
-    /// Return a shared reference to the middleware registry.
-    pub fn middleware_registry(&self) -> &agent::MiddlewareRegistry {
-        &self.middleware_registry
-    }
-
-    /// Return a mutable reference to the middleware registry.
-    pub fn middleware_registry_mut(&mut self) -> &mut agent::MiddlewareRegistry {
-        &mut self.middleware_registry
-    }
-
-    /// Return a shared reference to the provider registry.
-    pub fn provider_registry(&self) -> &provider::ProviderRegistry {
-        &self.provider_registry
-    }
-
-    /// Return a mutable reference to the provider registry.
-    pub fn provider_registry_mut(&mut self) -> &mut provider::ProviderRegistry {
-        &mut self.provider_registry
-    }
-
-    /// Return a shared reference to the channel registry.
-    pub fn channel_registry(&self) -> &channel_registry::ChannelRegistry {
-        &self.channel_registry
-    }
-
-    /// Return a mutable reference to the channel registry.
-    pub fn channel_registry_mut(&mut self) -> &mut channel_registry::ChannelRegistry {
-        &mut self.channel_registry
-    }
+    pub fn middleware_registry(&self) -> &agent::MiddlewareRegistry { &self.middleware_registry }
+    pub fn middleware_registry_mut(&mut self) -> &mut agent::MiddlewareRegistry { &mut self.middleware_registry }
+    pub fn provider_registry(&self) -> &provider::ProviderRegistry { &self.provider_registry }
+    pub fn provider_registry_mut(&mut self) -> &mut provider::ProviderRegistry { &mut self.provider_registry }
+    pub fn channel_registry(&self) -> &channel_registry::ChannelRegistry { &self.channel_registry }
+    pub fn channel_registry_mut(&mut self) -> &mut channel_registry::ChannelRegistry { &mut self.channel_registry }
 
     async fn init(&self) -> Result<Vec<crate::runtime::channel::ChannelRuntime>, anyhow::Error> {
         self.config.validate()?;
@@ -300,7 +243,7 @@ mod tests {
     impl agent::middleware::Middleware for TestMiddleware {}
 
     #[test]
-    fn with_middleware_registry_survives_with_state() -> anyhow::Result<()> {
+    fn with_middleware_registry_works() -> anyhow::Result<()> {
         let bot = NekoBot::new(config::Config {
             channels: Vec::new(),
             providers: Vec::new(),
@@ -310,15 +253,12 @@ mod tests {
         })
         .with_middleware("test", |_config| {
             Ok(Arc::new(TestMiddleware) as Arc<dyn agent::middleware::Middleware>)
-        })?
-        .with_state("state");
+        })?;
         let config = MiddlewareConfig {
             name: "test".to_owned(),
             data: serde_json::Map::new(),
         };
-
         let middlewares = agent::middlewares_from_config(&[config], bot.middleware_registry())?;
-
         assert_eq!(middlewares.len(), 1);
         Ok(())
     }

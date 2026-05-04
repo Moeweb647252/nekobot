@@ -90,7 +90,13 @@ impl WeiXinChannel {
                 .await;
 
             let status: QrCodeStatus = match resp {
-                Ok(r) => r.json().await.unwrap_or(QrCodeStatus { status: "wait".into(), ..Default::default() }),
+                Ok(r) => match r.json().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(target: "weixin", "failed to parse QR status: {e}");
+                        continue;
+                    }
+                },
                 Err(_) => continue,
             };
 
@@ -226,7 +232,7 @@ impl WeiXinChannel {
                 for item in items {
                     if item.r#type == Some(1) {
                         if let Some(ref text_item) = item.text_item {
-                            let _ = event_tx.send(Event::IncomingMessage {
+                            if let Err(e) = event_tx.send(Event::IncomingMessage {
                                 chat: ChatInfo {
                                     id: crate::ChatId::from(format!("weixin:{from_id}")),
                                     name: crate::ChatName::from(from_id.clone()),
@@ -237,7 +243,9 @@ impl WeiXinChannel {
                                     name: crate::SenderName::from(from_id.clone()),
                                 },
                                 content: text_item.text.clone(),
-                            }).await;
+                            }).await {
+                                tracing::error!(target: "weixin", "failed to forward event: {e}");
+                            }
                         }
                     }
                 }
@@ -286,16 +294,25 @@ impl Channel for WeiXinChannel {
                 let _ = entity::upsert(db, &self.name, &json).await;
                 tracing::info!(target: "weixin", "登录成功，凭证已持久化");
             }
-        } else if !self.verify_credentials().await.unwrap_or(false) {
-            tracing::info!(target: "weixin", "cached credentials expired, re-logging in...");
-            self.state.lock().await.credentials = None;
-            let creds = Self::login(&self.base_url, &self.http).await?;
-            self.state.lock().await.credentials = Some(creds.clone());
+        } else {
+            let valid = match self.verify_credentials().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(target: "weixin", "failed to verify credentials: {e}");
+                    false
+                }
+            };
+            if !valid {
+                tracing::info!(target: "weixin", "cached credentials expired, re-logging in...");
+                self.state.lock().await.credentials = None;
+                let creds = Self::login(&self.base_url, &self.http).await?;
+                self.state.lock().await.credentials = Some(creds.clone());
 
-            if let (Some(ref db), Ok(json)) = (app_db.as_ref(), serde_json::to_string(&creds)) {
-                let _ = entity::upsert(db, &self.name, &json).await;
+                if let (Some(ref db), Ok(json)) = (app_db.as_ref(), serde_json::to_string(&creds)) {
+                    let _ = entity::upsert(db, &self.name, &json).await;
+                }
+                tracing::info!(target: "weixin", "重新登录成功");
             }
-            tracing::info!(target: "weixin", "重新登录成功");
         }
 
         let state = self.state.lock().await;

@@ -115,7 +115,6 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// Factory closure type for creating a provider from its config.
 /// Registry of provider factories, mapping type names (e.g. `"DeepSeek"`) to factory
 /// closures. External crates (e.g. `nekobot-provider`) register factories;
 /// the core uses them to instantiate providers from [`ProviderConfig`] entries.

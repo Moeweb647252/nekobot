@@ -2,7 +2,6 @@
 
 pub mod channel;
 pub mod session_gate;
-pub mod shell;
 
 /// A long-running task that processes events for a channel+agent combination.
 ///
