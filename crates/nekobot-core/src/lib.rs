@@ -4,6 +4,7 @@
 //! configuration, middleware/provider/channel registries, and optional
 //! user-defined state, then wires everything together via [`run`](NekoBot::run).
 
+use anyhow::Context;
 use nekobot_channel::Channel;
 
 pub mod agent;
@@ -84,9 +85,9 @@ impl NekoBot {
         let channels = self.init_channels()?;
         tracing::info!("initialized {} channel(s)", channels.len());
         let agent_configs = self.build_agent_configs(&providers)?;
-        let gate = self.build_gate(&db);
+        let gate = self.build_gate(&db)?;
 
-        Ok(self.build_runtimes(channels, &db, agent_configs, gate))
+        self.build_runtimes(channels, &db, agent_configs, gate)
     }
 
     async fn init_database(&self) -> Result<turso::Database, anyhow::Error> {
@@ -164,15 +165,25 @@ impl NekoBot {
     fn build_gate(
         &self,
         db: &turso::Database,
-    ) -> Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>> {
+    ) -> anyhow::Result<Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>>> {
         use crate::runtime::session_gate::SessionGate;
 
-        self.config.password_hash.as_ref().map(|hash| {
-            let valid_agents: Vec<String> =
-                self.config.agents.iter().map(|a| a.name.clone()).collect();
-            let conn = db.connect().expect("failed to connect for gate");
-            std::sync::Arc::new(SessionGate::new(hash.clone(), valid_agents, conn))
-        })
+        self.config
+            .password_hash
+            .as_ref()
+            .map(|hash| {
+                let valid_agents: Vec<String> =
+                    self.config.agents.iter().map(|a| a.name.clone()).collect();
+                let conn = db
+                    .connect()
+                    .context("failed to connect for gate")?;
+                Ok(std::sync::Arc::new(SessionGate::new(
+                    hash.clone(),
+                    valid_agents,
+                    conn,
+                )))
+            })
+            .transpose()
     }
 
     fn build_runtimes(
@@ -181,13 +192,13 @@ impl NekoBot {
         db: &turso::Database,
         agent_configs: Vec<crate::agent::AgentSessionConfig>,
         gate: Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>>,
-    ) -> Vec<crate::runtime::channel::ChannelRuntime> {
+    ) -> anyhow::Result<Vec<crate::runtime::channel::ChannelRuntime>> {
         use crate::runtime::channel::{ChannelContext, ChannelRuntime};
 
         channels
             .into_iter()
             .map(|ch| {
-                let app_db = db.connect().expect("failed to connect for runtime");
+                let app_db = db.connect().context("failed to connect for runtime")?;
                 let mut rt = ChannelRuntime::new(
                     ch,
                     ChannelContext { app_db },
@@ -196,7 +207,7 @@ impl NekoBot {
                 if let Some(ref g) = gate {
                     rt = rt.with_gate(std::sync::Arc::clone(g));
                 }
-                rt
+                Ok(rt)
             })
             .collect()
     }

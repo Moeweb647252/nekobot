@@ -4,6 +4,14 @@ use turso::Connection;
 
 use crate::entity::{self, message::Message};
 
+/// Tool call metadata for persisting assistant/tool messages.
+pub struct ToolPayload {
+    /// Tool call ID, used when role is "tool".
+    pub tool_call_id: String,
+    /// Serialized tool calls JSON, used when role is "assistant".
+    pub tool_calls: Option<String>,
+}
+
 /// A handle to an active session, combining a database connection and session ID.
 ///
 /// Used by [`AgentSession`](crate::agent::AgentSession) to persist messages.
@@ -19,8 +27,7 @@ impl SessionHandle {
         role: impl Into<String>,
         content: impl Into<String>,
         reasoning_content: Option<String>,
-        tool_call_id: Option<String>,
-        tool_calls: Option<String>,
+        tool: Option<ToolPayload>,
     ) -> anyhow::Result<entity::message::Message> {
         Message::create(
             &self.app_db,
@@ -28,8 +35,8 @@ impl SessionHandle {
             role,
             content,
             reasoning_content,
-            tool_call_id,
-            tool_calls,
+            tool.as_ref().map(|t| t.tool_call_id.clone()),
+            tool.as_ref().and_then(|t| t.tool_calls.clone()),
         )
         .await
     }

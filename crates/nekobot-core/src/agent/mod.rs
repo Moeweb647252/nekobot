@@ -462,7 +462,7 @@ impl AgentSession {
         let should_interact = match activation {
             AgentActivation::ChannelMessage { content, .. } => {
                 session
-                    .add_message(MessageRole::User.to_string(), content, None, None, None)
+                    .add_message(MessageRole::User.to_string(), content, None, None)
                     .await?;
                 true
             }
@@ -477,18 +477,20 @@ impl AgentSession {
 
         let request = self.build_chat_request(app_db).await?;
         let response = self.interact(middlewares, ctx, request).await?;
-        let tool_calls_json = if response.tool_calls.is_empty() {
+        let tool = if response.tool_calls.is_empty() {
             None
         } else {
-            serde_json::to_string(&response.tool_calls).ok()
+            Some(crate::session::ToolPayload {
+                tool_call_id: String::new(),
+                tool_calls: serde_json::to_string(&response.tool_calls).ok(),
+            })
         };
         session
             .add_message(
                 MessageRole::Assistant.to_string(),
                 response.content.clone(),
                 response.reasoning_content.clone(),
-                None,
-                tool_calls_json,
+                tool,
             )
             .await?;
 
@@ -513,7 +515,6 @@ impl AgentSession {
                     .add_message(
                         MessageRole::Custom("internal".to_owned()).to_string(),
                         prompt,
-                        None,
                         None,
                         None,
                     )
