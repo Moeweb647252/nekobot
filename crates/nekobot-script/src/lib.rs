@@ -1,7 +1,7 @@
-//! Scripting middleware — registers an `eval_ts` tool that lets agents execute
-//! TypeScript code in a sandboxed JavaScript runtime (Boa + SWC).
+//! Scripting middleware — registers `eval_ts` and `reset_ts` tools that let
+//! agents execute TypeScript code in a persistent JavaScript runtime (Boa + SWC).
 
-mod runner;
+mod actor;
 mod ts_check;
 
 use std::sync::RwLock;
@@ -14,6 +14,8 @@ use nekobot_core::agent::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+
+use actor::ActorHandle;
 
 /// Deserialized from `MiddlewareConfig.data`.
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +31,7 @@ fn default_timeout() -> u64 { 5000 }
 pub struct ScriptMiddleware {
     tool_specs: RwLock<Vec<ToolSpec>>,
     timeout_ms: u64,
+    actor: ActorHandle,
 }
 
 impl ScriptMiddleware {
@@ -37,97 +40,97 @@ impl ScriptMiddleware {
         Self {
             tool_specs: RwLock::new(Vec::new()),
             timeout_ms: config.timeout_ms,
+            actor: ActorHandle::spawn(),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl Middleware for ScriptMiddleware {
-    fn name(&self) -> &'static str {
-        "script"
-    }
+    fn name(&self) -> &'static str { "script" }
 
     async fn before_chat(
         &self,
         _ctx: &Context,
         request: &mut ChatRequest,
     ) -> Result<MiddlewareFlow, anyhow::Error> {
-        let specs = self
-            .tool_specs
-            .read()
-            .map_err(|e| anyhow::anyhow!("script tool_specs lock poisoned: {e}"))?;
+        let specs = self.tool_specs.read()
+            .map_err(|e| anyhow::anyhow!("script lock: {e}"))?;
         request.tools.extend(specs.iter().cloned());
         Ok(MiddlewareFlow::Continue)
     }
 
     async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
-        let tool = Arc::new(EvalTsTool { timeout_ms: self.timeout_ms });
+        let eval = Arc::new(EvalTsTool { handle: self.actor.clone(), timeout_ms: self.timeout_ms });
+        let reset = Arc::new(ResetTsTool { handle: self.actor.clone() });
 
-        let spec = ToolSpec {
-            name: tool.name().to_owned(),
-            description: tool.description().to_owned(),
-            parameters_schema: tool.parameters_schema(),
-        };
+        let mut specs = self.tool_specs.write()
+            .map_err(|e| anyhow::anyhow!("script lock: {e}"))?;
+        for tool in [eval.as_ref() as &dyn Tool, reset.as_ref()] {
+            specs.push(ToolSpec {
+                name: tool.name().to_owned(),
+                description: tool.description().to_owned(),
+                parameters_schema: tool.parameters_schema(),
+            });
+        }
+        drop(specs);
 
-        self.tool_specs
-            .write()
-            .map_err(|e| anyhow::anyhow!("script tool_specs lock poisoned: {e}"))?
-            .push(spec);
-
-        ctx.tool_registry().register(tool)?;
+        ctx.tool_registry().register(eval)?;
+        ctx.tool_registry().register(reset)?;
         Ok(())
     }
 }
 
-/// Tool that transpiles TypeScript → JavaScript via SWC and executes it via Boa.
-struct EvalTsTool { timeout_ms: u64 }
+struct EvalTsTool { handle: ActorHandle, timeout_ms: u64 }
 
 #[async_trait::async_trait]
 impl Tool for EvalTsTool {
-    fn name(&self) -> &str {
-        "eval_ts"
-    }
-
+    fn name(&self) -> &str { "eval_ts" }
     fn description(&self) -> &str {
-        "Execute TypeScript code in a Boajs runtime. \
-         The code must use strict types (no `any`). \
-         fetch, console and other Web APIs supported by boa_runtime are available. \
-         Returns the result of the last expression as a string."
+        "Execute TypeScript code in a persistent Boajs runtime. Variables and \
+         imports persist across calls. Use `reset_ts` to clear all state. \
+         fetch, console and other Web APIs are available."
     }
-
     fn parameters_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "TypeScript code to execute. Must not use `any` type."
-                }
+                "code": { "type": "string", "description": "TypeScript code. Must not use `any`." }
             },
             "required": ["code"]
         })
     }
-
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let code = args
-            .get("code")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("missing 'code' parameter".to_owned()))?;
-
+        let code = args.get("code").and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'code'".to_owned()))?;
         let js_code = ts_check::transpile(code)
             .map_err(|e| ToolError::Execution(format!("TypeScript error: {e}")))?;
-
-        let fut = runner::execute(js_code);
+        let fut = self.handle.eval(js_code);
         let result = if self.timeout_ms > 0 {
             tokio::time::timeout(std::time::Duration::from_millis(self.timeout_ms), fut)
                 .await
                 .map_err(|_| ToolError::Execution("eval_ts timed out".to_owned()))?
         } else {
             fut.await
-        }
-        .map_err(ToolError::Execution)?;
+        };
+        Ok(result.map_err(ToolError::Execution)?)
+    }
+}
 
-        Ok(Value::String(result))
+struct ResetTsTool { handle: ActorHandle }
+
+#[async_trait::async_trait]
+impl Tool for ResetTsTool {
+    fn name(&self) -> &str { "reset_ts" }
+    fn description(&self) -> &str {
+        "Reset the TypeScript context. All variables, imports, and functions are cleared."
+    }
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+    async fn call(&self, _args: Value) -> ToolResult<Value> {
+        self.handle.reset().await;
+        Ok(Value::String("TypeScript context reset.".into()))
     }
 }
 
@@ -158,33 +161,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runner_executes_js() {
-        let result = runner::execute("1 + 2".to_owned())
-            .await
-            .expect("should execute");
-        assert_eq!(result, "3");
+    async fn persistent_context_keeps_variables() {
+        let handle = ActorHandle::spawn();
+        let js = ts_check::transpile("let x: number = 1 + 2;").unwrap();
+        handle.eval(js).await.unwrap();
+        let result = handle.eval("x + 3".to_owned()).await.unwrap();
+        assert_eq!(result, serde_json::json!(6));
     }
 
     #[tokio::test]
-    async fn runner_executes_string() {
-        let result = runner::execute("'hello'".to_owned())
-            .await
-            .expect("should execute");
-        assert_eq!(result, "hello");
-    }
-
-    #[tokio::test]
-    async fn runner_reports_js_error() {
-        let err = runner::execute("throw new Error('boom')".to_owned())
-            .await
-            .expect_err("should fail");
-        assert!(err.contains("boom") || err.contains("JS execution error"));
+    async fn reset_clears_context() {
+        let handle = ActorHandle::spawn();
+        let js = ts_check::transpile("let x: number = 1;").unwrap();
+        handle.eval(js).await.unwrap();
+        handle.reset().await;
+        let err = handle.eval("x".to_owned()).await.unwrap_err();
+        assert!(err.contains("not defined") || err.contains("JS execution"));
     }
 
     #[tokio::test]
     async fn eval_ts_end_to_end() {
         let js = ts_check::transpile("40 + 2").expect("transpile");
-        let result = runner::execute(js).await.expect("execute");
-        assert_eq!(result, "42");
+        let handle = ActorHandle::spawn();
+        let result = handle.eval(js).await.expect("execute");
+        assert_eq!(result, serde_json::json!(42));
     }
 }
