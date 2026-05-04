@@ -79,16 +79,17 @@ impl NekoBot {
     async fn init(&self) -> Result<Vec<crate::runtime::channel::ChannelRuntime>, anyhow::Error> {
         self.config.validate()?;
 
-        let conn = self.init_database().await?;
+        let db = self.init_database().await?;
         let providers = self.init_providers()?;
         let channels = self.init_channels()?;
+        tracing::info!("initialized {} channel(s)", channels.len());
         let agent_configs = self.build_agent_configs(&providers)?;
-        let gate = self.build_gate(&conn);
+        let gate = self.build_gate(&db);
 
-        Ok(self.build_runtimes(channels, conn, agent_configs, gate))
+        Ok(self.build_runtimes(channels, &db, agent_configs, gate))
     }
 
-    async fn init_database(&self) -> Result<turso::Connection, anyhow::Error> {
+    async fn init_database(&self) -> Result<turso::Database, anyhow::Error> {
         use crate::entity::{
             Entity, channel_chat_agent::ChannelChatAgent, message::Message,
             persona, sender_gate_state::SenderGateState, session::Session,
@@ -104,7 +105,8 @@ impl NekoBot {
         ChannelChatAgent::create_table(&conn).await?;
         SenderGateState::create_table(&conn).await?;
         persona::create_table(&conn).await?;
-        Ok(conn)
+        drop(conn);
+        Ok(db)
     }
 
     fn init_providers(
@@ -161,21 +163,22 @@ impl NekoBot {
 
     fn build_gate(
         &self,
-        conn: &turso::Connection,
+        db: &turso::Database,
     ) -> Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>> {
         use crate::runtime::session_gate::SessionGate;
 
         self.config.password_hash.as_ref().map(|hash| {
             let valid_agents: Vec<String> =
                 self.config.agents.iter().map(|a| a.name.clone()).collect();
-            std::sync::Arc::new(SessionGate::new(hash.clone(), valid_agents, conn.clone()))
+            let conn = db.connect().expect("failed to connect for gate");
+            std::sync::Arc::new(SessionGate::new(hash.clone(), valid_agents, conn))
         })
     }
 
     fn build_runtimes(
         &self,
         channels: Vec<Box<dyn Channel>>,
-        conn: turso::Connection,
+        db: &turso::Database,
         agent_configs: Vec<crate::agent::AgentSessionConfig>,
         gate: Option<std::sync::Arc<crate::runtime::session_gate::SessionGate>>,
     ) -> Vec<crate::runtime::channel::ChannelRuntime> {
@@ -184,11 +187,10 @@ impl NekoBot {
         channels
             .into_iter()
             .map(|ch| {
+                let app_db = db.connect().expect("failed to connect for runtime");
                 let mut rt = ChannelRuntime::new(
                     ch,
-                    ChannelContext {
-                        app_db: conn.clone(),
-                    },
+                    ChannelContext { app_db },
                     agent_configs.clone(),
                 );
                 if let Some(ref g) = gate {

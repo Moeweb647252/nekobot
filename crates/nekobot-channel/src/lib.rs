@@ -7,7 +7,7 @@ pub mod channel;
 pub mod entity;
 mod types;
 
-pub use types::{ChannelId, ChannelName, ChatId, ChatName, ReplyTarget, SenderId, SenderName};
+pub use types::{ChannelId, ChannelName, ChatId, ChatName, ChatType, ReplyTarget, SenderId, SenderName};
 
 /// Inbound event from a channel, forwarded to the agent runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub struct ChatInfo {
     pub name: ChatName,
     /// Opaque token used by [`Request::SendMessage`] to route replies back to the right conversation.
     pub reply_target: ReplyTarget,
+    pub chat_type: ChatType,
 }
 
 /// Identifies the sender of a message.
@@ -95,6 +96,7 @@ mod tests {
             id: ChatId::from("chat-1"),
             name: ChatName::from("Alice"),
             reply_target: ReplyTarget::from("target-1"),
+            chat_type: ChatType::Private,
         };
         let request = Request::SendMessage {
             target: chat.reply_target.clone(),

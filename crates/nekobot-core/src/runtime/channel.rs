@@ -17,9 +17,7 @@ use crate::{
         middleware::AgentActivation,
     },
     entity::{
-        Entity,
         channel_chat_agent::{AgentName, ChannelChatAgent, NewChannelChatAgent, SessionId},
-        message::Message,
         session::Session,
     },
 };
@@ -89,13 +87,6 @@ impl ChannelRuntime {
         self
     }
 
-    async fn prepare_tables(&self) -> anyhow::Result<()> {
-        crate::entity::session::Session::create_table(&self.context.app_db).await?;
-        Message::create_table(&self.context.app_db).await?;
-        ChannelChatAgent::create_table(&self.context.app_db).await?;
-        Ok(())
-    }
-
     async fn handle_channel_event(
         &mut self,
         channel_info: &ChannelInfo,
@@ -108,10 +99,8 @@ impl ChannelRuntime {
                 sender,
                 content,
             } => {
-                // C2C gate interception — login / connect before agent.
-                // Only applies to C2C private chats (chat id prefixed with "c2c:").
-                let is_c2c = chat.id.is_c2c();
-                let agent_name_override = if is_c2c {
+                // Gate interception — login / connect before agent (private chats only).
+                let agent_name_override = if chat.chat_type.is_private() {
                     if let Some(gate) = &self.gate {
                         match gate
                             .intercept(channel_info.id.as_str(), sender.id.as_str(), &content)
@@ -264,11 +253,11 @@ impl ChannelRuntime {
 impl Runtime for ChannelRuntime {
     /// Prepare tables, register with the channel, and enter the event loop.
     async fn run(&mut self) -> anyhow::Result<()> {
-        self.prepare_tables().await?;
-
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(64);
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(64);
+        tracing::info!(target: "runtime", "registering channel...");
         let channel_info = self.channel.register(event_sender, Some(self.context.app_db.clone())).await?;
+        tracing::info!(target: "runtime", "channel {} registered as {}", channel_info.name, channel_info.id.as_str());
 
         loop {
             tokio::select! {
@@ -303,8 +292,8 @@ mod tests {
     };
 
     use nekobot_channel::{
-        ChannelId, ChannelInfo, ChannelName, ChatId, ChatInfo, ChatName, ReplyTarget, SenderId,
-        SenderInfo, SenderName,
+        ChannelId, ChannelInfo, ChannelName, ChatId, ChatInfo, ChatName, ChatType,
+        ReplyTarget, SenderId, SenderInfo, SenderName,
     };
     use tokio::sync::{Mutex, Notify};
     use turso::Builder;
@@ -312,6 +301,7 @@ mod tests {
     use crate::{
         agent::types::ChatResponse,
         entity::{
+            Entity,
             channel_chat_agent::{AgentName, ChannelChatAgent},
             message::Message,
             session::Session,
@@ -410,6 +400,9 @@ mod tests {
     ) -> anyhow::Result<(ChannelRuntime, Connection, Arc<AtomicUsize>)> {
         let db = Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
+        Session::create_table(&conn).await?;
+        Message::create_table(&conn).await?;
+        ChannelChatAgent::create_table(&conn).await?;
         let (runtime, calls) = runtime_with_connection(channel, conn.clone(), "Neko");
         Ok((runtime, conn, calls))
     }
@@ -461,6 +454,7 @@ mod tests {
             id: ChatId::from(id),
             name: ChatName::from(name),
             reply_target: ReplyTarget::from(reply_target),
+            chat_type: ChatType::Private,
         }
     }
 
@@ -595,7 +589,9 @@ mod tests {
         let chat = chat("chat-1", "Alice", "alice-target");
         let channel_info = channel_info();
 
-        neko_runtime.prepare_tables().await?;
+        Session::create_table(&conn).await?;
+        Message::create_table(&conn).await?;
+        ChannelChatAgent::create_table(&conn).await?;
         neko_runtime
             .ensure_agent_session(&channel_info, &chat, output_sender.clone(), None)
             .await?;

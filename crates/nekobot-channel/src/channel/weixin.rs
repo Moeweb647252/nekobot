@@ -3,12 +3,14 @@
 //! Uses QR code login, long-polling for events, and Bearer token authentication.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::{Mutex, mpsc};
+use tracing::debug;
 
 use crate::{Channel, ChannelInfo, ChatInfo, Event, ReplyTarget, Request, SenderInfo, entity};
 
@@ -19,15 +21,16 @@ fn build_reply_target(user_id: &str, context_token: &str) -> ReplyTarget {
 
 /// Decode a WeiXin ReplyTarget into (user_id, context_token).
 fn parse_weixin_target(target: &ReplyTarget) -> Option<(&str, &str)> {
-    target.as_str().strip_prefix("weixin:").map(|s| {
-        s.split_once('|').unwrap_or((s, ""))
-    })
+    target
+        .as_str()
+        .strip_prefix("weixin:")
+        .map(|s| s.split_once('|').unwrap_or((s, "")))
 }
 
 /// Shared mutable state.
 struct ChannelState {
     credentials: Option<WeiXinCredentials>,
-    uin_header: String,           // X-WECHAT-UIN base64 value
+    uin_header: String, // X-WECHAT-UIN base64 value
 }
 
 /// Credentials obtained after QR code login.
@@ -67,13 +70,22 @@ impl WeiXinChannel {
         let qr_url = format!("{base_url}/ilink/bot/get_bot_qrcode?bot_type=3");
         let qr_resp: QrCodeResponse = http
             .get(&qr_url)
-            .send().await.context("failed to get QR code")?
-            .json().await.context("failed to parse QR response")?;
+            .header("iLink-App-Id", "bot")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .context("failed to get QR code (timeout?)")?
+            .json()
+            .await
+            .context("failed to parse QR response")?;
 
         tracing::info!(target: "weixin", "请用微信扫描二维码: {}", qr_resp.qrcode_img_content);
 
         // 2. Poll for scan
-        let status_url = format!("{base_url}/ilink/bot/get_qrcode_status?qrcode={}", qr_resp.qrcode);
+        let status_url = format!(
+            "{base_url}/ilink/bot/get_qrcode_status?qrcode={}",
+            qr_resp.qrcode
+        );
         let deadline = std::time::Instant::now() + Duration::from_secs(480);
         let mut current_base_url = base_url.to_owned();
         let mut scanned = false;
@@ -85,6 +97,7 @@ impl WeiXinChannel {
 
             let resp = http
                 .get(&status_url.replace(base_url, &current_base_url))
+                .header("iLink-App-Id", "bot")
                 .timeout(Duration::from_secs(35))
                 .send()
                 .await;
@@ -116,9 +129,11 @@ impl WeiXinChannel {
                 }
                 "expired" => anyhow::bail!("二维码已过期，请重启"),
                 "confirmed" => {
-                    let bot_token = status.bot_token
+                    let bot_token = status
+                        .bot_token
                         .ok_or_else(|| anyhow::anyhow!("missing bot_token"))?;
-                    let ilink_bot_id = status.ilink_bot_id
+                    let ilink_bot_id = status
+                        .ilink_bot_id
                         .ok_or_else(|| anyhow::anyhow!("missing ilink_bot_id"))?;
                     return Ok(WeiXinCredentials {
                         bot_token,
@@ -137,14 +152,18 @@ impl WeiXinChannel {
     /// Verify stored credentials are still valid.
     async fn verify_credentials(&self) -> anyhow::Result<bool> {
         let state = self.state.lock().await;
-        let Some(ref creds) = state.credentials else { return Ok(false) };
+        let Some(ref creds) = state.credentials else {
+            return Ok(false);
+        };
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/ilink/bot/getconfig", creds.base_url))
             .header("Content-Type", "application/json")
             .header("AuthorizationType", "ilink_bot_token")
             .header("Authorization", format!("Bearer {}", creds.bot_token))
             .header("X-WECHAT-UIN", &state.uin_header)
+            .header("iLink-App-Id", "bot")
             .json(&serde_json::json!({"ilink_user_id": creds.ilink_user_id}))
             .send()
             .await;
@@ -155,9 +174,16 @@ impl WeiXinChannel {
     /// Build common headers for all API requests.
     async fn api_headers(&self) -> anyhow::Result<(String, String, String, String)> {
         let state = self.state.lock().await;
-        let creds = state.credentials.as_ref()
+        let creds = state
+            .credentials
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("weixin not logged in"))?;
-        Ok((creds.base_url.clone(), creds.bot_token.clone(), state.uin_header.clone(), creds.ilink_user_id.clone()))
+        Ok((
+            creds.base_url.clone(),
+            creds.bot_token.clone(),
+            state.uin_header.clone(),
+            creds.ilink_user_id.clone(),
+        ))
     }
 
     /// Run the long-poll loop.
@@ -176,7 +202,12 @@ impl WeiXinChannel {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 };
-                (creds.base_url.clone(), creds.bot_token.clone(), s.uin_header.clone(), creds.ilink_user_id.clone())
+                (
+                    creds.base_url.clone(),
+                    creds.bot_token.clone(),
+                    s.uin_header.clone(),
+                    creds.ilink_user_id.clone(),
+                )
             };
 
             let resp = match http
@@ -185,6 +216,7 @@ impl WeiXinChannel {
                 .header("AuthorizationType", "ilink_bot_token")
                 .header("Authorization", format!("Bearer {token}"))
                 .header("X-WECHAT-UIN", &uin)
+                .header("iLink-App-Id", "bot")
                 .json(&serde_json::json!({
                     "get_updates_buf": cursor,
                     "base_info": { "channel_version": "1.0" }
@@ -200,50 +232,48 @@ impl WeiXinChannel {
                 }
             };
 
-            let body: GetUpdatesResponse = match resp.json().await {
-                Ok(b) => b,
+            let body: GetUpdatesResponse = match resp.text().await {
+                Ok(text) => match serde_json::from_str(&text) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(target: "weixin", "failed to parse getUpdates: {e}, body: {text}");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                },
                 Err(e) => {
-                    tracing::error!(target: "weixin", "failed to parse getUpdates: {e}");
+                    tracing::error!(target: "weixin", "failed to read getUpdates body: {e}");
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
 
-            if body.errcode == Some(-14) {
-                tracing::warn!(target: "weixin", "session expired, clearing credentials");
-                state.lock().await.credentials = None;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
-            }
-
-            if body.ret != 0 {
-                cursor = body.get_updates_buf.unwrap_or_default();
-                continue;
-            }
-
-            for msg in &body.msgs.unwrap_or_default() {
-                if msg.message_type != Some(1) || msg.message_state != Some(2) {
+            for msg in &body.msgs {
+                if msg.message_type != 1 || msg.message_state != 2 {
                     continue;
                 }
-                let Some(ref items) = msg.item_list else { continue };
                 let Some(from_id) = &msg.from_user_id else { continue };
-                let ctx_token = msg.context_token.clone().unwrap_or_default();
+                let ctx_token = msg.context_token.as_deref().unwrap_or("");
 
-                for item in items {
-                    if item.r#type == Some(1) {
+                for item in &msg.item_list {
+                    if item.r#type == 1 {
                         if let Some(ref text_item) = item.text_item {
-                            if let Err(e) = event_tx.send(Event::IncomingMessage {
-                                chat: ChatInfo {
-                                    id: crate::ChatId::from(format!("weixin:{from_id}")),
-                                    name: crate::ChatName::from(from_id.clone()),
-                                    reply_target: build_reply_target(from_id, &ctx_token),
-                                },
-                                sender: SenderInfo {
-                                    id: crate::SenderId::from(from_id.clone()),
-                                    name: crate::SenderName::from(from_id.clone()),
-                                },
-                                content: text_item.text.clone(),
-                            }).await {
+                            if let Err(e) = event_tx
+                                .send(Event::IncomingMessage {
+                                    chat: ChatInfo {
+                                        id: crate::ChatId::from(format!("weixin:{from_id}")),
+                                        name: crate::ChatName::from(from_id.clone()),
+                                        reply_target: build_reply_target(from_id, &ctx_token),
+                                        chat_type: crate::ChatType::Private,
+                                    },
+                                    sender: SenderInfo {
+                                        id: crate::SenderId::from(from_id.clone()),
+                                        name: crate::SenderName::from(from_id.clone()),
+                                    },
+                                    content: text_item.text.clone(),
+                                })
+                                .await
+                            {
                                 tracing::error!(target: "weixin", "failed to forward event: {e}");
                             }
                         }
@@ -251,8 +281,8 @@ impl WeiXinChannel {
                 }
             }
 
-            cursor = body.get_updates_buf.unwrap_or_default();
-            let sleep_ms = body.longpolling_timeout_ms.unwrap_or(35000) / 2;
+            cursor = body.get_updates_buf.clone();
+            let sleep_ms = 35000 / 2;
             tokio::time::sleep(Duration::from_millis(sleep_ms as u64)).await;
         }
     }
@@ -265,6 +295,7 @@ impl Channel for WeiXinChannel {
         event_tx: mpsc::Sender<Event>,
         app_db: Option<turso::Connection>,
     ) -> anyhow::Result<ChannelInfo> {
+        debug!("registering WeiXin channel '{}'", self.name);
         // Persist credentials via entity table
         if let Some(ref db) = app_db {
             let _ = entity::create_table(db).await;
@@ -279,7 +310,10 @@ impl Channel for WeiXinChannel {
                 }
             }
         }
-
+        debug!(
+            "requiring lock to set credentials, current: {}",
+            creds.is_some()
+        );
         let mut state = self.state.lock().await;
         state.credentials = creds;
         let need_login = state.credentials.is_none();
@@ -345,57 +379,76 @@ impl Channel for WeiXinChannel {
                     .ok_or_else(|| anyhow::anyhow!("invalid weixin target: {target}"))?;
                 let (base_url, token, uin, _) = self.api_headers().await?;
 
-                self.http
+                let resp = self
+                    .http
                     .post(format!("{base_url}/ilink/bot/sendmessage"))
                     .header("Content-Type", "application/json")
                     .header("AuthorizationType", "ilink_bot_token")
                     .header("Authorization", format!("Bearer {token}"))
                     .header("X-WECHAT-UIN", &uin)
+                    .header("iLink-App-Id", "bot")
                     .json(&serde_json::json!({
                         "msg": {
+                            "from_user_id": "",
                             "to_user_id": uid,
+                            "client_id": next_client_id(),
+                            "message_type": 2,
+                            "message_state": 2,
                             "context_token": ctx,
                             "item_list": [{"type": 1, "text_item": {"text": content}}]
                         },
                         "base_info": {"channel_version": "1.0"}
                     }))
-                    .send().await.context("failed to send weixin message")?;
+                    .send()
+                    .await
+                    .context("failed to send weixin message")?;
+
+                if !resp.status().is_success() {
+                    let body = resp.text().await.unwrap_or_default();
+                    anyhow::bail!("weixin sendmessage failed: {body}");
+                }
             }
             Request::StartTyping { target } => {
                 let (_uid, _) = parse_weixin_target(&target)
                     .ok_or_else(|| anyhow::anyhow!("invalid weixin target: {target}"))?;
                 let (base_url, token, uin, ilink_user_id) = self.api_headers().await?;
 
-                let _ = self.http
+                let _ = self
+                    .http
                     .post(format!("{base_url}/ilink/bot/sendtyping"))
                     .header("Content-Type", "application/json")
                     .header("AuthorizationType", "ilink_bot_token")
                     .header("Authorization", format!("Bearer {token}"))
                     .header("X-WECHAT-UIN", &uin)
+                    .header("iLink-App-Id", "bot")
                     .json(&serde_json::json!({
                         "ilink_user_id": ilink_user_id,
                         "status": 1,
                         "base_info": {"channel_version": "1.0"}
                     }))
-                    .send().await;
+                    .send()
+                    .await;
             }
             Request::StopTyping { target } => {
                 let (_uid, _) = parse_weixin_target(&target)
                     .ok_or_else(|| anyhow::anyhow!("invalid weixin target: {target}"))?;
                 let (base_url, token, uin, ilink_user_id) = self.api_headers().await?;
 
-                let _ = self.http
+                let _ = self
+                    .http
                     .post(format!("{base_url}/ilink/bot/sendtyping"))
                     .header("Content-Type", "application/json")
                     .header("AuthorizationType", "ilink_bot_token")
                     .header("Authorization", format!("Bearer {token}"))
                     .header("X-WECHAT-UIN", &uin)
+                    .header("iLink-App-Id", "bot")
                     .json(&serde_json::json!({
                         "ilink_user_id": ilink_user_id,
                         "status": 2,
                         "base_info": {"channel_version": "1.0"}
                     }))
-                    .send().await;
+                    .send()
+                    .await;
             }
         }
         Ok(())
@@ -404,16 +457,27 @@ impl Channel for WeiXinChannel {
 
 fn random_uin() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u32;
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u32;
     // Simple base64-like encode for a random u32 header value
     let bytes = n.to_le_bytes();
-    let chars: Vec<u8> = (0..=63).map(|i| {
-        if i < 26 { b'A' + i }
-        else if i < 52 { b'a' + i - 26 }
-        else if i < 62 { b'0' + i - 52 }
-        else if i == 62 { b'+' }
-        else { b'/' }
-    }).collect();
+    let chars: Vec<u8> = (0..=63)
+        .map(|i| {
+            if i < 26 {
+                b'A' + i
+            } else if i < 52 {
+                b'a' + i - 26
+            } else if i < 62 {
+                b'0' + i - 52
+            } else if i == 62 {
+                b'+'
+            } else {
+                b'/'
+            }
+        })
+        .collect();
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -422,10 +486,20 @@ fn random_uin() -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(chars[(n >> 18) as usize] as char);
         out.push(chars[((n >> 12) & 0x3f) as usize] as char);
-        if chunk.len() > 1 { out.push(chars[((n >> 6) & 0x3f) as usize] as char); }
-        if chunk.len() > 2 { out.push(chars[(n & 0x3f) as usize] as char); }
+        if chunk.len() > 1 {
+            out.push(chars[((n >> 6) & 0x3f) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(chars[(n & 0x3f) as usize] as char);
+        }
     }
     out
+}
+
+fn next_client_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("nekobot-{n}")
 }
 
 // ── API response types ──
@@ -449,38 +523,26 @@ struct QrCodeResponse {
     qrcode_img_content: String,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct GetUpdatesResponse {
-    ret: i32,
-    #[serde(default)]
-    errcode: Option<i32>,
-    #[serde(default)]
-    msgs: Option<Vec<WeiXinMessage>>,
-    #[serde(default)]
-    get_updates_buf: Option<String>,
-    #[serde(default)]
-    longpolling_timeout_ms: Option<i32>,
+    msgs: Vec<WeiXinMessage>,
+    get_updates_buf: String,
+    #[serde(alias = "sync_buf")]
+    sync_buf: String,
 }
 
 #[derive(Deserialize)]
 struct WeiXinMessage {
-    #[serde(default)]
     from_user_id: Option<String>,
-    #[serde(default)]
-    message_type: Option<i32>,
-    #[serde(default)]
-    message_state: Option<i32>,
-    #[serde(default)]
+    message_type: i32,
+    message_state: i32,
     context_token: Option<String>,
-    #[serde(default)]
-    item_list: Option<Vec<MessageItem>>,
+    item_list: Vec<MessageItem>,
 }
 
 #[derive(Deserialize)]
 struct MessageItem {
-    #[serde(default)]
-    r#type: Option<i32>,
-    #[serde(default)]
+    r#type: i32,
     text_item: Option<TextItem>,
 }
 

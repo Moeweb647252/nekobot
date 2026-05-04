@@ -12,6 +12,7 @@ pub mod sender_gate_state;
 pub mod session;
 
 pub(crate) async fn enable_foreign_keys(conn: &Connection) -> anyhow::Result<()> {
+    conn.query("PRAGMA journal_mode = WAL", ()).await?;
     conn.execute("PRAGMA foreign_keys = ON", ()).await?;
     Ok(())
 }

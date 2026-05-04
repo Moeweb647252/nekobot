@@ -602,6 +602,7 @@ async fn dispatch_event(
                             event.author.username.as_deref().unwrap_or("私聊"),
                         ),
                         reply_target: build_reply_target_c2c(&event.author.user_openid),
+                        chat_type: crate::ChatType::Private,
                     },
                     sender: SenderInfo {
                         id: crate::SenderId::from(event.author.user_openid.clone()),
@@ -621,6 +622,7 @@ async fn dispatch_event(
                         id: crate::ChatId::from(format!("group:{}", event.group_openid)),
                         name: crate::ChatName::from(format!("群聊:{}", event.group_openid)),
                         reply_target: build_reply_target_group(&event.group_openid),
+                        chat_type: crate::ChatType::Group,
                     },
                     sender: SenderInfo {
                         id: crate::SenderId::from(event.author.user_openid.clone()),

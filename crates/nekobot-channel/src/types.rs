@@ -58,6 +58,17 @@ impl ChatId {
         self.0.starts_with("c2c:")
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatType {
+    Private,
+    Group,
+}
+
+impl ChatType {
+    pub fn is_private(self) -> bool { matches!(self, ChatType::Private) }
+}
+
 string_newtype!(ChatName, "Human-readable name of a conversation.");
 string_newtype!(SenderId, "Unique identifier for a message sender.");
 string_newtype!(SenderName, "Human-readable name of a message sender.");
