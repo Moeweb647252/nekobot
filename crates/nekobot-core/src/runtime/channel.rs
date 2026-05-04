@@ -215,9 +215,11 @@ impl ChannelRuntime {
             return Ok(handle.clone());
         }
 
-        let agent_session = AgentSession::new(mapping.session_id.as_i64(), config.clone());
+        let config = config.clone();
+        let middlewares = config.resolve_middlewares()?;
+        let agent_session = AgentSession::new(mapping.session_id.as_i64(), config);
         let handle = agent_session
-            .start(self.context.app_db.clone(), output_sender)
+            .start(middlewares, self.context.app_db.clone(), output_sender)
             .await?;
         self.sessions.insert(key, handle.clone());
 

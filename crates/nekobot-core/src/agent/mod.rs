@@ -104,13 +104,20 @@ impl MiddlewareRegistry {
             .with_context(|| format!("failed to create middleware {}", config.name))
             .map(Some)
     }
+
+    /// Create middleware instances for all given configs, skipping unrecognized names.
+    pub fn create_many(&self, configs: &[MiddlewareConfig]) -> anyhow::Result<Vec<Arc<dyn Middleware>>> {
+        middlewares_from_config(configs, self)
+    }
 }
 
-/// Configuration bundle used to construct an `AgentSession`, holding the resolved provider, middleware list, model options, and shared tool registry.
+/// Configuration bundle used to construct an `AgentSession`, holding the provider, model options,
+/// and middleware factory data (resolved per-session to avoid cross-session state sharing).
 #[derive(Clone)]
 pub struct AgentSessionConfig {
     pub agent_name: String,
-    pub middlewares: Vec<Arc<dyn Middleware>>,
+    pub middleware_configs: Vec<crate::config::MiddlewareConfig>,
+    pub middleware_registry: MiddlewareRegistry,
     pub provider: Arc<dyn Provider>,
     pub model_options: ModelOptions,
     pub max_message_count: Option<usize>,
@@ -118,19 +125,21 @@ pub struct AgentSessionConfig {
 }
 
 impl AgentSessionConfig {
-    /// Builds a session config from a static `AgentConfig`, resolving middlewares through the registry.
+    /// Builds a session config from a static `AgentConfig`.
+    /// Middleware instances are NOT resolved here — they are created
+    /// per-session via [`resolve_middlewares`](AgentSessionConfig::resolve_middlewares).
     pub fn from_agent_config(
         agent: &crate::config::AgentConfig,
         provider: Arc<dyn Provider>,
         model_options: ModelOptions,
         middleware_registry: &MiddlewareRegistry,
     ) -> anyhow::Result<Self> {
-        let middlewares = middlewares_from_config(&agent.middlewares, middleware_registry)?;
         Ok(Self::new(
             agent.name.clone(),
             provider,
             model_options,
-            middlewares,
+            agent.middlewares.clone(),
+            middleware_registry.clone(),
             agent.max_message_count,
             agent.max_tool_iterations,
         ))
@@ -141,18 +150,25 @@ impl AgentSessionConfig {
         agent_name: impl Into<String>,
         provider: Arc<dyn Provider>,
         model_options: ModelOptions,
-        middlewares: Vec<Arc<dyn Middleware>>,
+        middleware_configs: Vec<crate::config::MiddlewareConfig>,
+        middleware_registry: MiddlewareRegistry,
         max_message_count: Option<usize>,
         max_tool_iterations: usize,
     ) -> Self {
         Self {
             agent_name: agent_name.into(),
-            middlewares,
+            middleware_configs,
+            middleware_registry,
             provider,
             model_options,
             max_message_count,
             max_tool_iterations,
         }
+    }
+
+    /// Create fresh middleware instances. Called once per session.
+    pub fn resolve_middlewares(&self) -> anyhow::Result<Vec<Arc<dyn Middleware>>> {
+        middlewares_from_config(&self.middleware_configs, &self.middleware_registry)
     }
 }
 
@@ -176,7 +192,8 @@ pub struct AgentSession {
     pub session_id: i64,
     /// Name of the agent that owns this session.
     pub agent_name: String,
-    pub(crate) middlewares: Vec<Arc<dyn Middleware>>,
+    pub(crate) middleware_configs: Vec<crate::config::MiddlewareConfig>,
+    pub(crate) middleware_registry: MiddlewareRegistry,
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model_options: ModelOptions,
     pub(crate) tool_registry: Arc<ToolRegistry>,
@@ -190,7 +207,8 @@ impl AgentSession {
         Self {
             session_id,
             agent_name: config.agent_name,
-            middlewares: config.middlewares,
+            middleware_configs: config.middleware_configs,
+            middleware_registry: config.middleware_registry,
             provider: config.provider,
             model_options: config.model_options,
             tool_registry: Arc::new(ToolRegistry::new()),
@@ -214,9 +232,10 @@ impl AgentSession {
         )
     }
 
-    /// Initializes middlewares and spawns the background event loop, returning a handle that can send activations.
+    /// Calls init on all middlewares, then spawns the background event loop.
     pub async fn start(
         self,
+        middlewares: Vec<Arc<dyn Middleware>>,
         app_db: Connection,
         output_sender: Sender<AgentOutput>,
     ) -> anyhow::Result<AgentSessionHandle> {
@@ -224,11 +243,15 @@ impl AgentSession {
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(32);
         let ctx = self.context(event_sender, app_db.clone());
 
-        self.init(&ctx).await?;
+        // Init each middleware with the session context
+        for mw in &middlewares {
+            mw.init(&ctx).await?;
+        }
 
         let session_id = self.session_id;
         tokio::spawn(async move {
             self.run_loop(
+                middlewares,
                 app_db,
                 ctx,
                 activation_receiver,
@@ -244,19 +267,11 @@ impl AgentSession {
         })
     }
 
-    /// Runs the `init` hook on every middleware in order.
-    pub async fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        for middleware in &self.middlewares {
-            middleware.init(ctx).await?;
-        }
-
-        Ok(())
-    }
-
     /// Runs the full middleware pipeline with a tool-call loop, calling the provider until
     /// no tool calls remain or the iteration limit is reached.
     pub async fn interact(
         &self,
+        middlewares: &[Arc<dyn Middleware>],
         ctx: Context,
         mut request: ChatRequest,
     ) -> anyhow::Result<ChatResponse> {
@@ -271,7 +286,7 @@ impl AgentSession {
             let mut response = if first_iteration {
                 first_iteration = false;
                 let mut aborted = None;
-                for (index, middleware) in self.middlewares.iter().enumerate() {
+                for (index, middleware) in middlewares.iter().enumerate() {
                     match middleware.before_chat(&ctx, &mut request).await {
                         Ok(MiddlewareFlow::Continue) => {}
                         Ok(MiddlewareFlow::Respond(resp)) => {
@@ -279,21 +294,21 @@ impl AgentSession {
                             break;
                         }
                         Err(error) => {
-                            self.run_error_hooks(&ctx, &error, index).await;
+                            run_error_hooks(middlewares, &ctx, &error, index).await;
                             return Err(error);
                         }
                     }
                 }
                 if let Some((idx, resp)) = aborted {
                     let mut resp = resp;
-                    self.run_after_chat_hooks(&ctx, &mut resp, idx + 1).await;
+                    run_after_chat_hooks(middlewares, &ctx, &mut resp, idx + 1).await;
                     return Ok(resp);
                 }
 
-                self.call_provider(&ctx, &request).await?
+                self.call_provider(middlewares, &ctx, &request).await?
             } else {
                 // Subsequent iterations: skip before_chat, go straight to provider
-                self.call_provider(&ctx, &request).await?
+                self.call_provider(middlewares, &ctx, &request).await?
             };
 
             // No more tool calls → final response
@@ -302,7 +317,7 @@ impl AgentSession {
                 response.tool_calls.iter().map(|tc| &tc.function.name).collect::<Vec<_>>());
             if response.tool_calls.is_empty() {
                 debug!(target: "agent", "no tool calls, returning final response");
-                self.run_after_chat_hooks(&ctx, &mut response, 0).await;
+                run_after_chat_hooks(middlewares, &ctx, &mut response, 0).await;
                 return Ok(response);
             }
 
@@ -359,6 +374,7 @@ impl AgentSession {
 
     async fn call_provider(
         &self,
+        middlewares: &[Arc<dyn Middleware>],
         ctx: &Context,
         request: &ChatRequest,
     ) -> anyhow::Result<ChatResponse> {
@@ -369,7 +385,7 @@ impl AgentSession {
         match self.provider.complete(provider_request).await {
             Ok(resp) => Ok(resp),
             Err(error) => {
-                self.run_error_hooks(ctx, &anyhow::anyhow!("{}", error), self.middlewares.len())
+                run_error_hooks(middlewares, ctx, &anyhow::anyhow!("{}", error), middlewares.len())
                     .await;
                 Err(anyhow::anyhow!("{}", error))
             }
@@ -378,6 +394,7 @@ impl AgentSession {
 
     async fn run_loop(
         self,
+        middlewares: Vec<Arc<dyn Middleware>>,
         app_db: Connection,
         ctx: Context,
         mut activation_receiver: Receiver<AgentActivation>,
@@ -393,7 +410,7 @@ impl AgentSession {
                     match activation {
                         Some(activation) => {
                             if let Err(e) = self
-                                .handle_activation(&app_db, ctx.clone(), activation, &output_sender)
+                                .handle_activation(&middlewares, &app_db, ctx.clone(), activation, &output_sender)
                                 .await
                             {
                                 tracing::error!(target: "agent", "interact error: {e:#}");
@@ -409,6 +426,7 @@ impl AgentSession {
                         Some(event) => {
                             if let Err(e) = self
                                 .handle_activation(
+                                    &middlewares,
                                     &app_db,
                                     ctx.clone(),
                                     AgentActivation::Middleware(event),
@@ -430,6 +448,7 @@ impl AgentSession {
 
     async fn handle_activation(
         &self,
+        middlewares: &[Arc<dyn Middleware>],
         app_db: &Connection,
         ctx: Context,
         activation: AgentActivation,
@@ -457,7 +476,7 @@ impl AgentSession {
         }
 
         let request = self.build_chat_request(app_db).await?;
-        let response = self.interact(ctx, request).await?;
+        let response = self.interact(middlewares, ctx, request).await?;
         let tool_calls_json = if response.tool_calls.is_empty() {
             None
         } else {
@@ -550,27 +569,32 @@ impl AgentSession {
             tools: Vec::new(),
         })
     }
+}
 
-    /// Runs after_chat hooks on middlewares that ran before the response.
-    /// Errors are logged rather than propagated.
-    async fn run_after_chat_hooks(&self, ctx: &Context, response: &mut ChatResponse, start: usize) {
-        for middleware in self.middlewares[..start].iter().rev() {
-            if let Err(error) = middleware.after_chat(ctx, response).await {
-                tracing::error!(target: "agent", "after_chat error in {}: {error:#}", middleware.name());
-            }
+/// Runs after_chat hooks on middlewares that ran before the response.
+/// Errors are logged rather than propagated.
+async fn run_after_chat_hooks(
+    middlewares: &[Arc<dyn Middleware>],
+    ctx: &Context,
+    response: &mut ChatResponse,
+    start: usize,
+) {
+    for middleware in middlewares[..start].iter().rev() {
+        if let Err(error) = middleware.after_chat(ctx, response).await {
+            tracing::error!(target: "agent", "after_chat error in {}: {error:#}", middleware.name());
         }
     }
+}
 
-    async fn run_error_hooks(
-        &self,
-        ctx: &Context,
-        error: &anyhow::Error,
-        applied_middleware_count: usize,
-    ) {
-        for middleware in self.middlewares[..applied_middleware_count].iter().rev() {
-            if let Err(e) = middleware.on_error(ctx, error).await {
-                tracing::error!(target: "agent", "on_error hook failed in {}: {e:#}", middleware.name());
-            }
+async fn run_error_hooks(
+    middlewares: &[Arc<dyn Middleware>],
+    ctx: &Context,
+    error: &anyhow::Error,
+    applied_middleware_count: usize,
+) {
+    for middleware in middlewares[..applied_middleware_count].iter().rev() {
+        if let Err(e) = middleware.on_error(ctx, error).await {
+            tracing::error!(target: "agent", "on_error hook failed in {}: {e:#}", middleware.name());
         }
     }
 }
@@ -773,7 +797,7 @@ mod tests {
         )?;
 
         assert_eq!(session_config.agent_name, "Neko");
-        assert!(session_config.middlewares.is_empty());
+        assert!(session_config.middleware_configs.is_empty());
         assert!(!provider_called.load(Ordering::SeqCst));
         Ok(())
     }
@@ -828,17 +852,20 @@ mod tests {
             max_tool_iterations: 10,
         };
 
-        let result = AgentSessionConfig::from_agent_config(
+        let config = AgentSessionConfig::from_agent_config(
             &agent_config,
             Arc::new(StaticProvider {
                 called: Arc::new(AtomicBool::new(false)),
             }),
             ModelOptions::default(),
             &registry,
-        );
+        )
+        .unwrap();
+
+        let result = config.resolve_middlewares();
 
         let error = match result {
-            Ok(_) => panic!("factory error should fail agent session config creation"),
+            Ok(_) => panic!("factory error should fail middleware resolution"),
             Err(error) => error.to_string(),
         };
         assert!(error.contains("failed to create middleware broken"));
@@ -865,21 +892,14 @@ mod tests {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let agent = AgentSession {
-            agent_name: "Neko".to_owned(),
-            session_id: 1,
-            middlewares: vec![Arc::new(ShortCircuitMiddleware)],
-            provider: Arc::new(StaticProvider {
-                called: Arc::clone(&provider_called),
-            }),
-            model_options: ModelOptions::default(),
-            tool_registry: Arc::clone(&tool_registry),
-            max_message_count: None,
-            max_tool_iterations: 10,
-        };
+        let agent = build_agent(Arc::new(StaticProvider {
+            called: Arc::clone(&provider_called),
+        }));
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![Arc::new(ShortCircuitMiddleware)];
 
         let response = agent
             .interact(
+                &middlewares,
                 Context::new("Neko", 1, event_sender, tool_registry, test_db()),
                 ChatRequest {
                     messages: Vec::new(),
@@ -899,28 +919,17 @@ mod tests {
         let provider_called = Arc::new(AtomicBool::new(false));
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(16);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let agent = AgentSession {
-            agent_name: "Neko".to_owned(),
-            session_id: 1,
-            middlewares: vec![Arc::new(ActivateOnInitMiddleware)],
-            provider: Arc::new(StaticProvider {
-                called: Arc::clone(&provider_called),
-            }),
-            model_options: ModelOptions::default(),
-            tool_registry: Arc::clone(&tool_registry),
-            max_message_count: None,
-            max_tool_iterations: 10,
-        };
-
-        agent
-            .init(&Context::new(
-                "Neko",
-                1,
-                event_sender,
-                tool_registry,
-                test_db(),
-            ))
-            .await?;
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![Arc::new(ActivateOnInitMiddleware)];
+        let ctx = Context::new(
+            "Neko",
+            1,
+            event_sender,
+            tool_registry,
+            test_db(),
+        );
+        for mw in &middlewares {
+            mw.init(&ctx).await?;
+        }
 
         assert_eq!(
             event_receiver.recv().await,
@@ -936,20 +945,12 @@ mod tests {
     async fn agent_session_records_activation_and_response() -> anyhow::Result<()> {
         let (conn, session) = connection().await?;
         let provider_called = Arc::new(AtomicBool::new(false));
-        let agent = AgentSession {
-            agent_name: session.agent_name.clone(),
-            session_id: session.id,
-            middlewares: Vec::new(),
-            provider: Arc::new(StaticProvider {
-                called: Arc::clone(&provider_called),
-            }),
-            model_options: ModelOptions::default(),
-            tool_registry: Arc::new(ToolRegistry::new()),
-            max_message_count: None,
-            max_tool_iterations: 10,
-        };
+        let agent = build_agent(Arc::new(StaticProvider {
+            called: Arc::clone(&provider_called),
+        }));
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![];
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
-        let handle = agent.start(conn.clone(), output_sender).await?;
+        let handle = agent.start(middlewares, conn.clone(), output_sender).await?;
 
         handle
             .activation_sender
@@ -983,20 +984,12 @@ mod tests {
     async fn middleware_activation_records_internal_message_and_response() -> anyhow::Result<()> {
         let (conn, session) = connection().await?;
         let provider_called = Arc::new(AtomicBool::new(false));
-        let agent = AgentSession {
-            agent_name: session.agent_name.clone(),
-            session_id: session.id,
-            middlewares: vec![Arc::new(ActivateOnInitMiddleware)],
-            provider: Arc::new(StaticProvider {
-                called: Arc::clone(&provider_called),
-            }),
-            model_options: ModelOptions::default(),
-            tool_registry: Arc::new(ToolRegistry::new()),
-            max_message_count: None,
-            max_tool_iterations: 10,
-        };
+        let agent = build_agent(Arc::new(StaticProvider {
+            called: Arc::clone(&provider_called),
+        }));
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![Arc::new(ActivateOnInitMiddleware)];
         let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel(16);
-        let _handle = agent.start(conn.clone(), output_sender).await?;
+        let _handle = agent.start(middlewares, conn.clone(), output_sender).await?;
 
         assert_eq!(
             output_receiver.recv().await,
@@ -1021,28 +1014,16 @@ mod tests {
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
         let captured_tools = Arc::new(Mutex::new(None));
         let tool_registry = Arc::new(ToolRegistry::new());
-        let agent = AgentSession {
-            agent_name: "Neko".to_owned(),
-            session_id: 1,
-            middlewares: vec![Arc::new(RegisterToolMiddleware)],
-            provider: Arc::new(ToolCapturingProvider {
-                tools: Arc::clone(&captured_tools),
-            }),
-            model_options: ModelOptions {
-                capabilities: ModelCapabilities {
-                    tools: true,
-                    ..ModelCapabilities::default()
-                },
-                ..ModelOptions::default()
-            },
-            tool_registry: Arc::clone(&tool_registry),
-            max_message_count: None,
-            max_tool_iterations: 10,
-        };
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![Arc::new(RegisterToolMiddleware)];
+        let agent = build_agent(Arc::new(ToolCapturingProvider {
+            tools: Arc::clone(&captured_tools),
+        })) ;
         let ctx = Context::new("Neko", 1, event_sender, tool_registry, test_db());
 
-        agent.init(&ctx).await?;
-        agent.interact(ctx, ChatRequest::default()).await?;
+        for mw in &middlewares {
+            mw.init(&ctx).await?;
+        }
+        agent.interact(&middlewares, ctx, ChatRequest::default()).await?;
 
         let tools = captured_tools
             .lock()
@@ -1079,24 +1060,18 @@ mod tests {
         };
         let observed_capabilities = Arc::new(Mutex::new(None));
         let tool_registry = Arc::new(ToolRegistry::new());
-        let agent = AgentSession {
-            agent_name: "Neko".to_owned(),
-            session_id: 1,
-            middlewares: Vec::new(),
-            provider: Arc::new(CapturingProvider {
-                capabilities: Arc::clone(&observed_capabilities),
-            }),
-            model_options: ModelOptions {
-                capabilities: capabilities.clone(),
-                ..ModelOptions::default()
-            },
-            tool_registry: Arc::clone(&tool_registry),
-            max_message_count: None,
-            max_tool_iterations: 10,
+        let mut agent = build_agent(Arc::new(CapturingProvider {
+            capabilities: Arc::clone(&observed_capabilities),
+        }));
+        agent.model_options = ModelOptions {
+            capabilities: capabilities.clone(),
+            ..ModelOptions::default()
         };
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![];
 
         agent
             .interact(
+                &middlewares,
                 Context::new("Neko", 1, event_sender, tool_registry, test_db()),
                 ChatRequest::default(),
             )
@@ -1136,21 +1111,14 @@ mod tests {
         let error_hook_called = Arc::new(AtomicBool::new(false));
         let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(16);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let agent = AgentSession {
-            agent_name: "Neko".to_owned(),
-            session_id: 1,
-            middlewares: vec![Arc::new(ErrorObserverMiddleware {
-                called: Arc::clone(&error_hook_called),
-            })],
-            provider: Arc::new(FailingProvider),
-            model_options: ModelOptions::default(),
-            tool_registry: Arc::clone(&tool_registry),
-            max_message_count: None,
-            max_tool_iterations: 10,
-        };
+        let agent = build_agent(Arc::new(FailingProvider));
+        let middlewares: Vec<Arc<dyn Middleware>> = vec![Arc::new(ErrorObserverMiddleware {
+            called: Arc::clone(&error_hook_called),
+        })];
 
         let result = agent
             .interact(
+                &middlewares,
                 Context::new("Neko", 1, event_sender, tool_registry, test_db()),
                 ChatRequest::default(),
             )
@@ -1158,6 +1126,20 @@ mod tests {
 
         assert!(result.is_err());
         assert!(error_hook_called.load(Ordering::SeqCst));
+    }
+
+    fn build_agent(provider: Arc<dyn Provider>) -> AgentSession {
+        AgentSession {
+            agent_name: "Neko".to_owned(),
+            session_id: 1,
+            middleware_configs: Vec::new(),
+            middleware_registry: MiddlewareRegistry::new(),
+            provider,
+            model_options: ModelOptions::default(),
+            tool_registry: Arc::new(ToolRegistry::new()),
+            max_message_count: None,
+            max_tool_iterations: 10,
+        }
     }
 
     fn chat_response(content: impl Into<String>) -> ChatResponse {
