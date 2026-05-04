@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use nekobot_core::agent::tool::{ToolError, ToolResult};
+use tracing::debug;
 
 #[derive(Debug, Deserialize)]
 struct SearxResponse {
@@ -93,6 +94,8 @@ impl nekobot_core::agent::tool::Tool for SearchTool {
             .send()
             .await
             .map_err(|e| ToolError::Execution(format!("search request failed: {e}")))?;
+
+        debug!("search url: {}", resp.url());
 
         let status = resp.status();
         if !status.is_success() {
