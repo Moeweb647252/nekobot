@@ -18,7 +18,6 @@ pub struct SkillMeta {
 /// A fully loaded skill including its instruction body.
 #[derive(Debug, Clone)]
 pub struct Skill {
-    pub meta: SkillMeta,
     /// The markdown body after the YAML frontmatter.
     pub body: String,
     /// The skill's root directory (parent of SKILL.md).
@@ -91,7 +90,6 @@ pub fn discover(root_dir: &Path) -> anyhow::Result<Vec<SkillMeta>> {
 
 /// Load a skill's complete content (frontmatter + body) given its `SKILL.md` path.
 pub fn load(location: &Path) -> anyhow::Result<Skill> {
-    let fm = parse_frontmatter(location)?;
     let content = fs::read_to_string(location)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", location.display()))?;
     let body = extract_body(&content);
@@ -101,15 +99,7 @@ pub fn load(location: &Path) -> anyhow::Result<Skill> {
         .ok_or_else(|| anyhow::anyhow!("no parent dir for {}", location.display()))?
         .to_path_buf();
 
-    Ok(Skill {
-        meta: SkillMeta {
-            name: fm.name,
-            description: fm.description,
-            location: location.to_path_buf(),
-        },
-        body,
-        base_dir,
-    })
+    Ok(Skill { body, base_dir })
 }
 
 /// Parse the YAML frontmatter from a `SKILL.md` file. Returns `Frontmatter{name, description}`.
@@ -127,12 +117,13 @@ fn parse_frontmatter(path: &Path) -> anyhow::Result<Frontmatter> {
     let fm: Frontmatter = serde_yml::from_str(&frontmatter_str)
         .map_err(|e| anyhow::anyhow!("{}: invalid YAML frontmatter: {e}", path.display()))?;
 
-    // Validate required fields
+    // Name is required — skip the skill if missing.
     if fm.name.trim().is_empty() {
         anyhow::bail!("{}: 'name' field is empty", path.display());
     }
+    // Description missing — warn but load anyway for cross-client compatibility.
     if fm.description.trim().is_empty() {
-        anyhow::bail!("{}: 'description' field is empty", path.display());
+        tracing::warn!(target: "skill", "{}: 'description' field is empty, skill will have no description", path.display());
     }
 
     Ok(fm)
@@ -259,8 +250,8 @@ mod tests {
         assert_eq!(skills.len(), 1);
 
         let skill = load(&skills[0].location).unwrap();
-        assert_eq!(skill.meta.name, "test");
-        assert_eq!(skill.meta.description, "A test skill");
+        assert_eq!(skills[0].name, "test");
+        assert_eq!(skills[0].description, "A test skill");
         assert!(skill.body.contains("Do the thing."));
         assert!(skill.base_dir.ends_with("test"));
     }
@@ -277,10 +268,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_empty_name() {
+    fn parse_allows_empty_description() {
         let dir = tempfile::tempdir().unwrap();
-        write_skill(dir.path(), "bad", "", "");
+        write_skill(dir.path(), "ok", "", "body");
         let skills = discover(dir.path()).unwrap();
-        assert!(skills.is_empty());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "ok");
+        assert!(skills[0].description.is_empty());
     }
 }

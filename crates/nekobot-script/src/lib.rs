@@ -4,7 +4,8 @@
 mod actor;
 mod ts_check;
 
-use std::sync::RwLock;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use nekobot_core::agent::{
     Context,
@@ -15,7 +16,7 @@ use nekobot_core::agent::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use actor::ActorHandle;
+use actor::{ActorHandle, ExecTaskState};
 
 /// Deserialized from `MiddlewareConfig.data`.
 #[derive(Debug, Clone, Deserialize)]
@@ -25,48 +26,99 @@ pub struct ScriptConfig {
     pub timeout_ms: u64,
 }
 
-fn default_timeout() -> u64 { 5000 }
+fn default_timeout() -> u64 {
+    5000
+}
 
 /// Middleware that registers the `eval_ts` tool.
+///
+/// # Field ownership
+/// - `actor` is created in [`init`] and moved into tool structs via clone.
+/// - `tasks` is `Arc`-wrapped so it can be shared with `SpawnTsTool`
+///   and `TaskResultTool` which hold their own references.
 pub struct ScriptMiddleware {
     tool_specs: RwLock<Vec<ToolSpec>>,
     timeout_ms: u64,
-    actor: ActorHandle,
+    actor: RwLock<Option<ActorHandle>>,
+    tasks: Arc<RwLock<HashMap<String, ExecTaskState>>>,
 }
 
 impl ScriptMiddleware {
     /// Create from a parsed [`ScriptConfig`].
+    /// The actor is spawned lazily in [`init`](Middleware::init) with session context.
     pub fn from_config(config: ScriptConfig) -> Self {
         Self {
             tool_specs: RwLock::new(Vec::new()),
             timeout_ms: config.timeout_ms,
-            actor: ActorHandle::spawn(),
+            actor: RwLock::new(None),
+            tasks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl Middleware for ScriptMiddleware {
-    fn name(&self) -> &'static str { "script" }
+    fn name(&self) -> &'static str {
+        "script"
+    }
 
     async fn before_chat(
         &self,
         _ctx: &Context,
         request: &mut ChatRequest,
     ) -> Result<MiddlewareFlow, anyhow::Error> {
-        let specs = self.tool_specs.read()
+        let specs = self
+            .tool_specs
+            .read()
             .map_err(|e| anyhow::anyhow!("script lock: {e}"))?;
         request.tools.extend(specs.iter().cloned());
+
+        let existing = request.system_prompt.take().unwrap_or_default();
+        request.system_prompt = Some(format!(
+            "{existing}\n\n\
+            The `nekobot` global is available in eval_ts / spawn_ts:\n\
+            ```ts\n\
+            interface Nekobot {{\n\
+              readonly session: {{\n\
+                readonly id: number;\n\
+                readonly agentName: string;\n\
+              }};\n\
+              notify(message: string): void;  // triggers agent interaction\n\
+            }}\n\
+            declare const nekobot: Nekobot;\n\
+            ```"
+        ));
         Ok(MiddlewareFlow::Continue)
     }
 
     async fn init(&self, ctx: &Context) -> Result<(), anyhow::Error> {
-        let eval = Arc::new(EvalTsTool { handle: self.actor.clone(), timeout_ms: self.timeout_ms });
-        let reset = Arc::new(ResetTsTool { handle: self.actor.clone() });
+        let handle = ActorHandle::spawn(ctx.clone());
+        let eval = Arc::new(EvalTsTool {
+            handle: handle.clone(),
+            timeout_ms: self.timeout_ms,
+        });
+        let reset = Arc::new(ResetTsTool {
+            handle: handle.clone(),
+        });
+        let spawn = Arc::new(SpawnTsTool {
+            ctx: ctx.clone(),
+            timeout_ms: self.timeout_ms,
+            tasks: Arc::clone(&self.tasks),
+        });
+        let task_result = Arc::new(TaskResultTool {
+            tasks: Arc::clone(&self.tasks),
+        });
 
-        let mut specs = self.tool_specs.write()
+        let mut specs = self
+            .tool_specs
+            .write()
             .map_err(|e| anyhow::anyhow!("script lock: {e}"))?;
-        for tool in [eval.as_ref() as &dyn Tool, reset.as_ref()] {
+        for tool in [
+            eval.as_ref() as &dyn Tool,
+            reset.as_ref(),
+            spawn.as_ref(),
+            task_result.as_ref(),
+        ] {
             specs.push(ToolSpec {
                 name: tool.name().to_owned(),
                 description: tool.description().to_owned(),
@@ -77,15 +129,27 @@ impl Middleware for ScriptMiddleware {
 
         ctx.tool_registry().register(eval)?;
         ctx.tool_registry().register(reset)?;
+        ctx.tool_registry().register(spawn)?;
+        ctx.tool_registry().register(task_result)?;
+
+        *self
+            .actor
+            .write()
+            .map_err(|e| anyhow::anyhow!("script lock: {e}"))? = Some(handle);
         Ok(())
     }
 }
 
-struct EvalTsTool { handle: ActorHandle, timeout_ms: u64 }
+struct EvalTsTool {
+    handle: ActorHandle,
+    timeout_ms: u64,
+}
 
 #[async_trait::async_trait]
 impl Tool for EvalTsTool {
-    fn name(&self) -> &str { "eval_ts" }
+    fn name(&self) -> &str {
+        "eval_ts"
+    }
     fn description(&self) -> &str {
         "Execute TypeScript code in a persistent Boajs runtime. Variables and \
          imports persist across calls. Use `reset_ts` to clear all state. \
@@ -101,7 +165,9 @@ impl Tool for EvalTsTool {
         })
     }
     async fn call(&self, args: Value) -> ToolResult<Value> {
-        let code = args.get("code").and_then(Value::as_str)
+        let code = args
+            .get("code")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArguments("missing 'code'".to_owned()))?;
         let js_code = ts_check::transpile(code)
             .map_err(|e| ToolError::Execution(format!("TypeScript error: {e}")))?;
@@ -117,11 +183,15 @@ impl Tool for EvalTsTool {
     }
 }
 
-struct ResetTsTool { handle: ActorHandle }
+struct ResetTsTool {
+    handle: ActorHandle,
+}
 
 #[async_trait::async_trait]
 impl Tool for ResetTsTool {
-    fn name(&self) -> &str { "reset_ts" }
+    fn name(&self) -> &str {
+        "reset_ts"
+    }
     fn description(&self) -> &str {
         "Reset the TypeScript context. All variables, imports, and functions are cleared."
     }
@@ -134,11 +204,103 @@ impl Tool for ResetTsTool {
     }
 }
 
-use std::sync::Arc;
+struct SpawnTsTool {
+    ctx: Context,
+    timeout_ms: u64,
+    tasks: Arc<RwLock<HashMap<String, ExecTaskState>>>,
+}
+
+#[async_trait::async_trait]
+impl Tool for SpawnTsTool {
+    fn name(&self) -> &str {
+        "spawn_ts"
+    }
+    fn description(&self) -> &str {
+        "Launch TypeScript code as a background task. Returns a taskId immediately. \
+         The script runs in its own JavaScript context with `nekobot.notify()` available. \
+         Use `ts_task_result` to check the result."
+    }
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "code": { "type": "string", "description": "TypeScript code to run in background." }
+            },
+            "required": ["code"]
+        })
+    }
+    async fn call(&self, args: Value) -> ToolResult<Value> {
+        let code = args
+            .get("code")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'code'".to_owned()))?;
+        let js_code = ts_check::transpile(code)
+            .map_err(|e| ToolError::Execution(format!("TypeScript error: {e}")))?;
+        let task_id = ActorHandle::spawn_background(
+            self.ctx.clone(),
+            js_code,
+            self.timeout_ms,
+            Arc::clone(&self.tasks),
+        );
+        Ok(serde_json::json!({ "taskId": task_id }))
+    }
+}
+
+struct TaskResultTool {
+    tasks: Arc<RwLock<HashMap<String, ExecTaskState>>>,
+}
+
+#[async_trait::async_trait]
+impl Tool for TaskResultTool {
+    fn name(&self) -> &str {
+        "ts_task_result"
+    }
+    fn description(&self) -> &str {
+        "Check the result of a background TypeScript task launched by `spawn_ts`. \
+         Returns status 'running' or 'done' with the output."
+    }
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "taskId": { "type": "string", "description": "Task ID returned by spawn_ts." }
+            },
+            "required": ["taskId"]
+        })
+    }
+    async fn call(&self, args: Value) -> ToolResult<Value> {
+        let task_id = args
+            .get("taskId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'taskId'".to_owned()))?;
+        let mut tasks = self
+            .tasks
+            .write()
+            .map_err(|e| ToolError::Execution(format!("tasks lock: {e}")))?;
+        match tasks.get(task_id).cloned() {
+            Some(ExecTaskState::Done { output }) => {
+                tasks.remove(task_id);
+                Ok(serde_json::json!({ "status": "done", "output": output }))
+            }
+            Some(ExecTaskState::Running) => {
+                Ok(serde_json::json!({ "status": "running" }))
+            }
+            None => Ok(serde_json::json!({ "status": "unknown", "message": "task not found" })),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nekobot_core::agent::tool::ToolRegistry;
+
+    async fn test_ctx() -> Context {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let db = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        Context::new("test_agent", 1, tx, Arc::new(ToolRegistry::new()), conn)
+    }
 
     #[test]
     fn transpile_valid_ts() {
@@ -162,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn persistent_context_keeps_variables() {
-        let handle = ActorHandle::spawn();
+        let handle = ActorHandle::spawn(test_ctx().await);
         let js = ts_check::transpile("let x: number = 1 + 2;").unwrap();
         handle.eval(js).await.unwrap();
         let result = handle.eval("x + 3".to_owned()).await.unwrap();
@@ -171,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_clears_context() {
-        let handle = ActorHandle::spawn();
+        let handle = ActorHandle::spawn(test_ctx().await);
         let js = ts_check::transpile("let x: number = 1;").unwrap();
         handle.eval(js).await.unwrap();
         handle.reset().await;
@@ -182,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn eval_ts_end_to_end() {
         let js = ts_check::transpile("40 + 2").expect("transpile");
-        let handle = ActorHandle::spawn();
+        let handle = ActorHandle::spawn(test_ctx().await);
         let result = handle.eval(js).await.expect("execute");
         assert_eq!(result, serde_json::json!(42));
     }

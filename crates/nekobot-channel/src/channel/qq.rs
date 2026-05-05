@@ -251,6 +251,7 @@ struct WSPayload {
     d: Value,
     /// Sequence number for session resume
     #[serde(default)]
+    #[allow(dead_code)]
     s: Option<u64>,
     /// Event type name, e.g. `C2C_MESSAGE_CREATE`, `GROUP_AT_MESSAGE_CREATE`
     #[serde(default)]
@@ -262,8 +263,10 @@ struct WSPayload {
 /// C2C private message event payload.
 #[derive(Deserialize, Debug)]
 struct C2CMessageEvent {
+    #[allow(dead_code)]
     id: String,
     content: String,
+    #[allow(dead_code)]
     timestamp: String,
     author: AuthorInfo,
 }
@@ -271,8 +274,10 @@ struct C2CMessageEvent {
 /// Group @-message event payload.
 #[derive(Deserialize, Debug)]
 struct GroupMessageEvent {
+    #[allow(dead_code)]
     id: String,
     content: String,
+    #[allow(dead_code)]
     timestamp: String,
     group_openid: String,
     author: AuthorInfo,
@@ -334,7 +339,11 @@ impl Channel for QQChannel {
     /// The WebSocket event loop runs in a background tokio task. Incoming
     /// messages are forwarded through `event_tx` as [`Event::IncomingMessage`].
     /// Returns [`ChannelInfo`] immediately without waiting for connection.
-    async fn register(&self, event_tx: mpsc::Sender<Event>, _app_db: Option<turso::Connection>) -> anyhow::Result<ChannelInfo> {
+    async fn register(
+        &self,
+        event_tx: mpsc::Sender<Event>,
+        _app_db: Option<turso::Connection>,
+    ) -> anyhow::Result<ChannelInfo> {
         let state = self.state.clone();
         let app_id = self.app_id.clone();
         let client_secret = self.client_secret.clone();

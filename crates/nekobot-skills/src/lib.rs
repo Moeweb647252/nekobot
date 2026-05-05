@@ -36,8 +36,6 @@ fn default_skills_dir() -> String {
 pub struct SkillMiddleware {
     /// All discovered skills (name + description).
     catalog: Vec<SkillMeta>,
-    /// Root directory for skill loading.
-    root_dir: PathBuf,
     /// Skills activated during this session (shared with UseSkillTool).
     activated: Arc<RwLock<HashSet<String>>>,
     /// Cached tool specs for injection into ChatRequest.
@@ -57,7 +55,6 @@ impl SkillMiddleware {
         );
         Ok(Self {
             catalog,
-            root_dir,
             activated: Arc::new(RwLock::new(HashSet::new())),
             tool_specs: RwLock::new(Vec::new()),
         })
@@ -114,7 +111,11 @@ impl Middleware for SkillMiddleware {
         let prompt = self.build_system_prompt();
         if !prompt.is_empty() {
             let existing = request.system_prompt.take().unwrap_or_default();
-            request.system_prompt = Some(if existing.is_empty() { prompt } else { format!("{existing}\n\n{prompt}") });
+            request.system_prompt = Some(if existing.is_empty() {
+                prompt
+            } else {
+                format!("{existing}\n\n{prompt}")
+            });
         }
         let specs = self
             .tool_specs

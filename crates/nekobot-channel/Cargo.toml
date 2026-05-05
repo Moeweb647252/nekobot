@@ -20,4 +20,6 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = [
 futures-util = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+rand = "0.8"
+base64 = "0.22"
 tracing.workspace = true

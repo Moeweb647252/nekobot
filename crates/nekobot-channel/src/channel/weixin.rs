@@ -3,12 +3,12 @@
 //! Uses QR code login, long-polling for events, and Bearer token authentication.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 use tracing::debug;
 
@@ -30,7 +30,6 @@ fn parse_weixin_target(target: &ReplyTarget) -> Option<(&str, &str)> {
 /// Shared mutable state.
 struct ChannelState {
     credentials: Option<WeiXinCredentials>,
-    uin_header: String, // X-WECHAT-UIN base64 value
 }
 
 /// Credentials obtained after QR code login.
@@ -52,14 +51,12 @@ pub struct WeiXinChannel {
 
 impl WeiXinChannel {
     pub fn new(name: impl Into<String>, base_url: impl Into<String>) -> Self {
-        let uin = random_uin();
         Self {
             name: name.into(),
             http: Client::new(),
             base_url: base_url.into(),
             state: Arc::new(Mutex::new(ChannelState {
                 credentials: None,
-                uin_header: uin,
             })),
         }
     }
@@ -71,6 +68,7 @@ impl WeiXinChannel {
         let qr_resp: QrCodeResponse = http
             .get(&qr_url)
             .header("iLink-App-Id", "bot")
+            .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
             .timeout(Duration::from_secs(15))
             .send()
             .await
@@ -96,8 +94,9 @@ impl WeiXinChannel {
             }
 
             let resp = http
-                .get(&status_url.replace(base_url, &current_base_url))
+                .get(&format!("{current_base_url}/ilink/bot/get_qrcode_status?qrcode={}", qr_resp.qrcode))
                 .header("iLink-App-Id", "bot")
+            .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
                 .timeout(Duration::from_secs(35))
                 .send()
                 .await;
@@ -156,22 +155,39 @@ impl WeiXinChannel {
             return Ok(false);
         };
 
-        let resp = self
+        let resp = match self
             .http
             .post(format!("{}/ilink/bot/getconfig", creds.base_url))
             .header("Content-Type", "application/json")
             .header("AuthorizationType", "ilink_bot_token")
             .header("Authorization", format!("Bearer {}", creds.bot_token))
-            .header("X-WECHAT-UIN", &state.uin_header)
+            .header("X-WECHAT-UIN", &random_uin())
             .header("iLink-App-Id", "bot")
+            .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
             .json(&serde_json::json!({"ilink_user_id": creds.ilink_user_id}))
             .send()
-            .await;
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Ok(false),
+        };
 
-        Ok(resp.is_ok() && resp.unwrap().status().is_success())
+        if !resp.status().is_success() {
+            return Ok(false);
+        }
+        // Also check errcode in the response body
+        if let Ok(body) = resp.text().await {
+            if let Ok(v) = serde_json::from_str::<Value>(&body) {
+                if v.get("errcode").and_then(Value::as_i64).unwrap_or(0) != 0 {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
-    /// Build common headers for all API requests.
+    /// Build common headers for all API requests. UIN is regenerated per-request
+    /// (matches the reference's `randomWechatUin()` in `buildHeaders()`).
     async fn api_headers(&self) -> anyhow::Result<(String, String, String, String)> {
         let state = self.state.lock().await;
         let creds = state
@@ -181,7 +197,7 @@ impl WeiXinChannel {
         Ok((
             creds.base_url.clone(),
             creds.bot_token.clone(),
-            state.uin_header.clone(),
+            random_uin(),
             creds.ilink_user_id.clone(),
         ))
     }
@@ -189,23 +205,41 @@ impl WeiXinChannel {
     /// Run the long-poll loop.
     async fn run_poll_loop(
         http: Client,
+        base_url: String,
         state: Arc<Mutex<ChannelState>>,
         event_tx: mpsc::Sender<Event>,
     ) {
         let mut cursor = String::new();
 
         loop {
-            let (base_url, token, uin, _ilink_user_id) = {
+            // Re-login if credentials cleared (e.g. session timeout)
+            {
+                let s = state.lock().await;
+                if s.credentials.is_none() {
+                    drop(s);
+                    match Self::login(&base_url, &http).await {
+                        Ok(creds) => {
+                            state.lock().await.credentials = Some(creds);
+                            tracing::info!(target: "weixin", "re-login succeeded");
+                        }
+                        Err(e) => {
+                            tracing::error!(target: "weixin", "re-login failed: {e}");
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            let (base_url, token, _ilink_user_id) = {
                 let s = state.lock().await;
                 let Some(ref creds) = s.credentials else {
-                    tracing::error!(target: "weixin", "poll loop: not logged in");
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 };
                 (
                     creds.base_url.clone(),
                     creds.bot_token.clone(),
-                    s.uin_header.clone(),
                     creds.ilink_user_id.clone(),
                 )
             };
@@ -215,11 +249,12 @@ impl WeiXinChannel {
                 .header("Content-Type", "application/json")
                 .header("AuthorizationType", "ilink_bot_token")
                 .header("Authorization", format!("Bearer {token}"))
-                .header("X-WECHAT-UIN", &uin)
+                .header("X-WECHAT-UIN", &random_uin())
                 .header("iLink-App-Id", "bot")
+                .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
                 .json(&serde_json::json!({
                     "get_updates_buf": cursor,
-                    "base_info": { "channel_version": "1.0" }
+                    "base_info": { "channel_version": "2.1.7" }
                 }))
                 .timeout(Duration::from_secs(40))
                 .send()
@@ -232,15 +267,26 @@ impl WeiXinChannel {
                 }
             };
 
-            let body: GetUpdatesResponse = match resp.text().await {
-                Ok(text) => match serde_json::from_str(&text) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(target: "weixin", "failed to parse getUpdates: {e}, body: {text}");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
+            let body = match resp.text().await {
+                Ok(text) => {
+                    // Check for session timeout or re-login
+                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                        if v.get("errcode").and_then(Value::as_i64).unwrap_or(0) == -14 {
+                            tracing::warn!(target: "weixin", "poll: session timeout, forcing re-login");
+                            state.lock().await.credentials = None;
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
                     }
-                },
+                    match serde_json::from_str::<GetUpdatesResponse>(&text) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(target: "weixin", "failed to parse getUpdates: {e}, body: {text}");
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::error!(target: "weixin", "failed to read getUpdates body: {e}");
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -248,12 +294,18 @@ impl WeiXinChannel {
                 }
             };
 
+            // Only update cursor on successful parse
+            cursor = body.get_updates_buf.clone();
+
             for msg in &body.msgs {
                 if msg.message_type != 1 || msg.message_state != 2 {
                     continue;
                 }
-                let Some(from_id) = &msg.from_user_id else { continue };
+                let Some(from_id) = &msg.from_user_id else {
+                    continue;
+                };
                 let ctx_token = msg.context_token.as_deref().unwrap_or("");
+                tracing::debug!(target: "weixin", "incoming msg from={from_id} ctx={ctx_token}");
 
                 for item in &msg.item_list {
                     if item.r#type == 1 {
@@ -281,7 +333,6 @@ impl WeiXinChannel {
                 }
             }
 
-            cursor = body.get_updates_buf.clone();
             let sleep_ms = 35000 / 2;
             tokio::time::sleep(Duration::from_millis(sleep_ms as u64)).await;
         }
@@ -350,8 +401,6 @@ impl Channel for WeiXinChannel {
         }
 
         let state = self.state.lock().await;
-        let name = self.name.clone();
-        let uin = state.uin_header.clone();
         let expected_state = state.credentials.is_some();
         drop(state);
 
@@ -359,11 +408,13 @@ impl Channel for WeiXinChannel {
             anyhow::bail!("weixin login failed");
         }
 
-        tracing::info!(target: "weixin", "weixin connected (X-WECHAT-UIN: {uin})");
+        tracing::info!(target: "weixin", "weixin connected");
         let http = self.http.clone();
         let poll_state = self.state.clone();
+        let base_url_clone = self.base_url.clone();
+        let name = self.name.clone();
         tokio::spawn(async move {
-            Self::run_poll_loop(http, poll_state, event_tx).await;
+            Self::run_poll_loop(http, base_url_clone, poll_state, event_tx).await;
         });
 
         Ok(ChannelInfo {
@@ -379,6 +430,30 @@ impl Channel for WeiXinChannel {
                     .ok_or_else(|| anyhow::anyhow!("invalid weixin target: {target}"))?;
                 let (base_url, token, uin, _) = self.api_headers().await?;
 
+                let msg = {
+                    let mut m = serde_json::json!({
+                        "from_user_id": "",
+                        "to_user_id": uid,
+                        "client_id": next_client_id(),
+                        "message_type": 2,
+                        "message_state": 2,
+                        "item_list": [{"type": 1, "text_item": {"text": content}}]
+                    });
+                    if !ctx.is_empty() {
+                        m.as_object_mut()
+                            .unwrap()
+                            .insert("context_token".to_owned(), Value::String(ctx.to_owned()));
+                    }
+                    m
+                };
+                let body = serde_json::json!({
+                    "msg": msg,
+                    "base_info": {"channel_version": "1.0"}
+                });
+
+                let request_body = body.to_string();
+                tracing::debug!(target: "weixin", "sendmessage to={uid} ctx={ctx} body={request_body}");
+
                 let resp = self
                     .http
                     .post(format!("{base_url}/ilink/bot/sendmessage"))
@@ -387,31 +462,35 @@ impl Channel for WeiXinChannel {
                     .header("Authorization", format!("Bearer {token}"))
                     .header("X-WECHAT-UIN", &uin)
                     .header("iLink-App-Id", "bot")
-                    .json(&serde_json::json!({
-                        "msg": {
-                            "from_user_id": "",
-                            "to_user_id": uid,
-                            "client_id": next_client_id(),
-                            "message_type": 2,
-                            "message_state": 2,
-                            "context_token": ctx,
-                            "item_list": [{"type": 1, "text_item": {"text": content}}]
-                        },
-                        "base_info": {"channel_version": "1.0"}
-                    }))
+            .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
+                    .json(&body)
                     .send()
                     .await
                     .context("failed to send weixin message")?;
 
-                if !resp.status().is_success() {
-                    let body = resp.text().await.unwrap_or_default();
-                    anyhow::bail!("weixin sendmessage failed: {body}");
+                let status = resp.status();
+                let resp_body = resp.text().await.unwrap_or_default();
+                tracing::debug!(target: "weixin", "sendmessage status={status} body={resp_body}");
+                if !status.is_success() {
+                    anyhow::bail!("weixin sendmessage failed (status={status}): {body}");
+                }
+                // Check for API-level error
+                if let Ok(v) = serde_json::from_str::<Value>(&resp_body) {
+                    let errcode = v.get("errcode").and_then(Value::as_i64).unwrap_or(0);
+                    if errcode == -14 {
+                        tracing::warn!(target: "weixin", "session timeout, forcing re-login");
+                        self.state.lock().await.credentials = None;
+                        anyhow::bail!("weixin session timeout");
+                    } else if errcode != 0 {
+                        let errmsg = v.get("errmsg").and_then(Value::as_str).unwrap_or("unknown");
+                        anyhow::bail!("weixin API error (errcode={errcode}): {errmsg}");
+                    }
                 }
             }
             Request::StartTyping { target } => {
-                let (_uid, _) = parse_weixin_target(&target)
+                let (uid, _) = parse_weixin_target(&target)
                     .ok_or_else(|| anyhow::anyhow!("invalid weixin target: {target}"))?;
-                let (base_url, token, uin, ilink_user_id) = self.api_headers().await?;
+                let (base_url, token, uin, _) = self.api_headers().await?;
 
                 let _ = self
                     .http
@@ -421,8 +500,9 @@ impl Channel for WeiXinChannel {
                     .header("Authorization", format!("Bearer {token}"))
                     .header("X-WECHAT-UIN", &uin)
                     .header("iLink-App-Id", "bot")
+                    .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
                     .json(&serde_json::json!({
-                        "ilink_user_id": ilink_user_id,
+                        "ilink_user_id": uid,
                         "status": 1,
                         "base_info": {"channel_version": "1.0"}
                     }))
@@ -430,9 +510,9 @@ impl Channel for WeiXinChannel {
                     .await;
             }
             Request::StopTyping { target } => {
-                let (_uid, _) = parse_weixin_target(&target)
+                let (uid, _) = parse_weixin_target(&target)
                     .ok_or_else(|| anyhow::anyhow!("invalid weixin target: {target}"))?;
-                let (base_url, token, uin, ilink_user_id) = self.api_headers().await?;
+                let (base_url, token, uin, _) = self.api_headers().await?;
 
                 let _ = self
                     .http
@@ -442,8 +522,9 @@ impl Channel for WeiXinChannel {
                     .header("Authorization", format!("Bearer {token}"))
                     .header("X-WECHAT-UIN", &uin)
                     .header("iLink-App-Id", "bot")
+                    .header("iLink-App-ClientVersion", CLIENT_VERSION_HEADER)
                     .json(&serde_json::json!({
-                        "ilink_user_id": ilink_user_id,
+                        "ilink_user_id": uid,
                         "status": 2,
                         "base_info": {"channel_version": "1.0"}
                     }))
@@ -455,51 +536,28 @@ impl Channel for WeiXinChannel {
     }
 }
 
+/// iLink-App-ClientVersion: uint32 encoded as 0x00MMNNPP (major<<16 | minor<<8 | patch).
+/// Kept in sync with openclaw-weixin's version.
+const CLIENT_VERSION_HEADER: &str = "131335"; // "2.1.7"
+
+/// Random uint32 as base64, per API spec.
+/// Per API spec: random uint32 → decimal string → base64.
 fn random_uin() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u32;
-    // Simple base64-like encode for a random u32 header value
-    let bytes = n.to_le_bytes();
-    let chars: Vec<u8> = (0..=63)
-        .map(|i| {
-            if i < 26 {
-                b'A' + i
-            } else if i < 52 {
-                b'a' + i - 26
-            } else if i < 62 {
-                b'0' + i - 52
-            } else if i == 62 {
-                b'+'
-            } else {
-                b'/'
-            }
-        })
-        .collect();
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(chars[(n >> 18) as usize] as char);
-        out.push(chars[((n >> 12) & 0x3f) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(chars[((n >> 6) & 0x3f) as usize] as char);
-        }
-        if chunk.len() > 2 {
-            out.push(chars[(n & 0x3f) as usize] as char);
-        }
-    }
-    out
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let n: u32 = rand::random();
+    STANDARD.encode(n.to_string().as_bytes())
 }
 
+/// Matches the reference `generateId("openclaw-weixin")` format:
+/// `prefix:{timestamp}-{random_hex}`
 fn next_client_id() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("nekobot-{n}")
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let rand_hex: u32 = rand::random();
+    format!("openclaw-weixin:{ts}-{rand_hex:08x}")
 }
 
 // ── API response types ──
@@ -523,11 +581,12 @@ struct QrCodeResponse {
     qrcode_img_content: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct GetUpdatesResponse {
     msgs: Vec<WeiXinMessage>,
     get_updates_buf: String,
     #[serde(alias = "sync_buf")]
+    #[allow(dead_code)]
     sync_buf: String,
 }
 

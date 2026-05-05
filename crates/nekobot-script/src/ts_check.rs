@@ -66,7 +66,7 @@ pub fn transpile(ts_code: &str) -> anyhow::Result<String> {
             };
             emitter
                 .emit_module(&js_module)
-                .map_err(|e| anyhow::anyhow!("failed to emit JS: {e:?}"))?;
+                .map_err(|e| anyhow::anyhow!("failed to emit JS: {e}"))?;
         }
         String::from_utf8(buf).map_err(|e| anyhow::anyhow!("invalid UTF-8: {e}"))
     })
@@ -79,10 +79,10 @@ struct AnyDetector {
 
 impl Visit for AnyDetector {
     fn visit_ts_type(&mut self, ty: &TsType) {
-        if let TsType::TsKeywordType(kw) = ty {
-            if kw.kind == TsKeywordTypeKind::TsAnyKeyword {
-                self.found = true;
-            }
+        if let TsType::TsKeywordType(kw) = ty
+            && kw.kind == TsKeywordTypeKind::TsAnyKeyword
+        {
+            self.found = true;
         }
         ty.visit_children_with(self);
     }
