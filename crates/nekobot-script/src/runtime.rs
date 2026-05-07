@@ -24,8 +24,11 @@ use tokio::task;
 use tracing::{debug, error};
 use turso::Connection;
 
+#[derive(Debug, Clone, Trace, Finalize, JsData)]
 pub struct NekobotContext {
+    #[unsafe_ignore_trace]
     pub event_sender: mpsc::Sender<MiddlewareEvent>,
+    #[unsafe_ignore_trace]
     pub app_db: Connection,
     pub session_id: i64,
     pub agent_name: String,
@@ -195,20 +198,22 @@ impl Runtime {
             )
             .build();
 
-        let tx = ctx.event_sender.clone();
-        let notify_fn = unsafe {
-            NativeFunction::from_closure(move |_this, args, _ctx| {
-                let msg = args
-                    .first()
-                    .and_then(|v| v.as_string())
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_default();
-                debug!(target: "actor", "notify called with message: {}", msg);
-                tx.try_send(MiddlewareEvent::activate(msg))
-                    .map(|_| JsValue::undefined())
-                    .map_err(|e| JsError::from_rust(e))
-            })
-        };
+        context.realm().host_defined_mut().insert(ctx);
+        let notify_fn = NativeFunction::from_fn_ptr(|_this, args, ctx| {
+            let msg = args
+                .first()
+                .and_then(|v| v.as_string())
+                .map(|s| s.to_std_string_escaped())
+                .unwrap_or_default();
+            debug!(target: "actor", "notify called with message: {}", msg);
+            let host_defined = ctx.realm().host_defined();
+            let nekobot_ctx = host_defined.get::<NekobotContext>().unwrap();
+            nekobot_ctx
+                .event_sender
+                .try_send(MiddlewareEvent::activate(msg))
+                .map(|_| JsValue::undefined())
+                .map_err(|e| JsError::from_rust(e))
+        });
 
         let nekobot = ObjectInitializer::new(&mut context)
             .property(JsString::from("session"), session, Attribute::all())
