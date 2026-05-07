@@ -27,6 +27,4 @@ futures-lite = "2.6"
 futures-concurrency = "7.7.1"
 reqwest = { workspace = true, features = ["json", "stream", "rustls"] }
 http = "1.4.0"
-
-[dev-dependencies]
 turso.workspace = true

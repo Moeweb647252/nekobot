@@ -1,24 +1,35 @@
 use anyhow::{Result, anyhow};
 use boa_engine::context::time::JsInstant;
 use boa_engine::job::{GenericJob, TimeoutJob};
+use boa_engine::object::ObjectInitializer;
+use boa_engine::property::Attribute;
 use boa_engine::{
     Context, JsResult, Script, Source,
     context::ContextBuilder,
     job::{Job, JobExecutor, NativeAsyncJob, PromiseJob},
 };
-use boa_engine::{Finalize, JsData, JsError, JsString, Trace};
+use boa_engine::{Finalize, JsData, JsError, JsString, JsValue, NativeFunction, Trace};
 use boa_runtime::fetch::Fetcher;
 use boa_runtime::fetch::request::JsRequest;
 use boa_runtime::fetch::response::JsResponse;
 use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
+use nekobot_core::agent::middleware::MiddlewareEvent;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::ops::DerefMut;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
-use tracing::error;
+use tracing::{debug, error};
+use turso::Connection;
+
+pub struct NekobotContext {
+    pub event_sender: mpsc::Sender<MiddlewareEvent>,
+    pub app_db: Connection,
+    pub session_id: i64,
+    pub agent_name: String,
+}
 
 /// An event queue using tokio to drive futures to completion.
 struct Queue {
@@ -142,7 +153,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn try_new(receiver: mpsc::UnboundedReceiver<EvalTask>) -> Result<Self> {
+    pub fn try_new(
+        receiver: mpsc::UnboundedReceiver<EvalTask>,
+        ctx: NekobotContext,
+    ) -> Result<Self> {
         let queue = Rc::new(Queue::new());
         let context = ContextBuilder::new()
             .job_executor(queue.clone())
@@ -153,12 +167,13 @@ impl Runtime {
             queue,
             task_receiver: receiver,
         };
-        runtime.add_runtime();
+        runtime.add_runtime(ctx);
         Ok(runtime)
     }
 
     /// Adds the custom runtime to the context.
-    fn add_runtime(&mut self) {
+    fn add_runtime(&mut self, ctx: NekobotContext) {
+        let mut context = self.context.borrow_mut();
         boa_runtime::register(
             (
                 // A fetcher can be added if the `fetch` feature flag is enabled.
@@ -167,9 +182,43 @@ impl Runtime {
                 boa_runtime::extensions::TimeoutExtension,
             ),
             None,
-            self.context.borrow_mut().deref_mut(),
+            &mut context,
         )
         .unwrap();
+
+        let session = ObjectInitializer::new(&mut context)
+            .property(JsString::from("id"), ctx.session_id, Attribute::all())
+            .property(
+                JsString::from("agentName"),
+                JsString::from(ctx.agent_name.as_str()),
+                Attribute::all(),
+            )
+            .build();
+
+        let tx = ctx.event_sender.clone();
+        let notify_fn = unsafe {
+            NativeFunction::from_closure(move |_this, args, _ctx| {
+                let msg = args
+                    .first()
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
+                debug!(target: "actor", "notify called with message: {}", msg);
+                tx.try_send(MiddlewareEvent::activate(msg))
+                    .map(|_| JsValue::undefined())
+                    .map_err(|e| JsError::from_rust(e))
+            })
+        };
+
+        let nekobot = ObjectInitializer::new(&mut context)
+            .property(JsString::from("session"), session, Attribute::all())
+            .function(notify_fn, JsString::from("notify"), 1)
+            .build();
+
+        context
+            .register_global_property(JsString::from("nekobot"), nekobot, Attribute::all())
+            .map_err(|e| format!("failed to register nekobot: {e}"))
+            .unwrap();
     }
 
     pub async fn start(&mut self) {
@@ -207,7 +256,7 @@ impl Runtime {
                     } {
                         Ok(script) => match {
                             let context = &mut context.borrow_mut();
-                            script.evaluate_async(context).await
+                            script.evaluate_async_with_budget(context, u32::MAX).await
                         } {
                             Ok(result) => {
                                 let context = &mut context.borrow_mut();
@@ -280,10 +329,7 @@ impl Fetcher for ReqwestFetcher {
             .build()
             .map_err(JsError::from_rust)?;
 
-        let resp = reqwest::Client::new()
-            .execute(req)
-            .await
-            .map_err(JsError::from_rust)?;
+        let resp = self.client.execute(req).await.map_err(JsError::from_rust)?;
 
         let status = resp.status();
         let headers = resp.headers().clone();

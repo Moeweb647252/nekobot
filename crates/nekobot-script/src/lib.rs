@@ -9,7 +9,10 @@ use nekobot_core::agent::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{runtime::Runtime, tools::eval_ts::EvalTsTool};
+use crate::{
+    runtime::{NekobotContext, Runtime},
+    tools::eval_ts::EvalTsTool,
+};
 mod runtime;
 mod tools;
 mod utils;
@@ -22,29 +25,13 @@ pub struct ScriptConfig {
 pub struct ScriptMiddleware {
     config: ScriptConfig,
     tool_specs: RwLock<Vec<nekobot_core::agent::tool::ToolSpec>>,
-    runtime_handle: runtime::RuntimeHandle,
-    runtime_join_handle: tokio::task::JoinHandle<()>,
 }
 
 impl ScriptMiddleware {
     pub fn from_config(config: ScriptConfig) -> Self {
-        let (runtime_handle, task_receiver) = runtime::RuntimeHandle::new();
-        let runtime_join_handle = tokio::task::spawn_blocking(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(
-                    Runtime::try_new(task_receiver)
-                        .expect("Failed to create script runtime")
-                        .start(),
-                );
-        });
         ScriptMiddleware {
             config,
             tool_specs: RwLock::new(Vec::new()),
-            runtime_handle,
-            runtime_join_handle,
         }
     }
 }
@@ -52,12 +39,29 @@ impl ScriptMiddleware {
 #[async_trait]
 impl Middleware for ScriptMiddleware {
     async fn init(&self, context: &Context) -> anyhow::Result<()> {
+        let nekobot_ctx = NekobotContext {
+            event_sender: context.event_sender.clone(),
+            app_db: context.app_db.clone(),
+            session_id: context.session_id.clone(),
+            agent_name: context.agent_name.clone(),
+        };
+        let (runtime_handle, task_receiver) = runtime::RuntimeHandle::new();
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(
+                    Runtime::try_new(task_receiver, nekobot_ctx)
+                        .expect("Failed to create script runtime")
+                        .start(),
+                );
+        });
         let mut tool_specs = self
             .tool_specs
             .write()
             .map_err(|_| anyhow::anyhow!("tool specs lock poisoned"))?;
-        let eval_ts_tool =
-            EvalTsTool::new(self.config.timeout_seconds, self.runtime_handle.clone());
+        let eval_ts_tool = EvalTsTool::new(self.config.timeout_seconds, runtime_handle.clone());
         tool_specs.push(nekobot_core::agent::tool::ToolSpec {
             name: eval_ts_tool.name().to_string(),
             description: eval_ts_tool.description().to_string(),
@@ -78,12 +82,23 @@ impl Middleware for ScriptMiddleware {
                 .map_err(|_| anyhow::anyhow!("tool specs lock poisoned"))?
                 .clone(),
         );
-        Ok(MiddlewareFlow::Continue)
-    }
-}
+        let existing = request.system_prompt.take().unwrap_or_default();
+        request.system_prompt = Some(format!(
+            "{existing}\n\n
+The `nekobot` global is available in eval_ts:
+```ts
+interface Nekobot {{
+    readonly session: {{
+    readonly id: number;
+    readonly agentName: string;
+    }};
+    notify(message: string): void;  // sends a activation message to agent
+}}
+declare const nekobot: Nekobot;
+```
 
-impl Drop for ScriptMiddleware {
-    fn drop(&mut self) {
-        self.runtime_join_handle.abort();
+"
+        ));
+        Ok(MiddlewareFlow::Continue)
     }
 }

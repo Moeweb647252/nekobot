@@ -17,7 +17,6 @@ nekobot-memory = { path = "crates/nekobot-memory" }
 nekobot-persona = { path = "crates/nekobot-persona" }
 turso = "0.5"
 serde = "1.0"
-toml = "1.1"
 serde_json = "1.0"
 thiserror = "2.0"
 futures-util = "0.3"

@@ -26,7 +26,7 @@ impl Tool for EvalTsTool {
     }
 
     fn description(&self) -> &str {
-        "Evaluate TypeScript code and return the result. The code will be wrapped in an async function, so you can use `await` inside. The tool accepts a single parameter `code` which is the TypeScript code to evaluate. The tool returns the result of the last expression in the code, or any value explicitly returned."
+        "Evaluate TypeScript code and return the result. setTimeout, setInterval, fetch are available. async code is supported."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
