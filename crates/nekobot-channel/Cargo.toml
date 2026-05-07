@@ -9,10 +9,7 @@ anyhow.workspace = true
 turso.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 
-reqwest = { version = "0.12", default-features = false, features = [
-    "json",
-    "rustls-tls",
-] }
+reqwest = { workspace = true, features = ["json", "rustls"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = [
     "rustls-tls-native-roots",
     "connect",
@@ -20,6 +17,6 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = [
 futures-util = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-rand = "0.8"
+rand = "0.10"
 base64 = "0.22"
 tracing.workspace = true

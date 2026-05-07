@@ -15,7 +15,9 @@ macro_rules! register_middleware {
                 let cfg: $cfg_type =
                     serde_json::from_value(serde_json::Value::Object(config.data.clone()))?;
                 Ok(std::sync::Arc::new($factory(cfg))
-                    as std::sync::Arc<dyn nekobot_core::agent::middleware::Middleware>)
+                    as std::sync::Arc<
+                        dyn nekobot_core::agent::middleware::Middleware,
+                    >)
             })
             .expect(concat!("Failed to register ", $name, " middleware"));
     };
@@ -25,8 +27,7 @@ macro_rules! register_middleware {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -61,12 +62,10 @@ async fn main() {
 
     bot.channel_registry_mut()
         .register("WeiXin", |cfg| match cfg {
-            nekobot_core::config::ChannelConfig::WeiXin { name, base_url, .. } => {
-                Ok(Box::new(nekobot_channel::channel::WeiXinChannel::new(
-                    name.clone(),
-                    base_url.clone(),
-                )) as Box<dyn nekobot_channel::Channel>)
-            }
+            nekobot_core::config::ChannelConfig::WeiXin { name, base_url, .. } => Ok(Box::new(
+                nekobot_channel::channel::WeiXinChannel::new(name.clone(), base_url.clone()),
+            )
+                as Box<dyn nekobot_channel::Channel>),
             nekobot_core::config::ChannelConfig::QQ { .. } => {
                 anyhow::bail!("WeiXin factory received QQ config");
             }
@@ -90,12 +89,9 @@ async fn main() {
         nekobot_script::ScriptConfig,
         nekobot_script::ScriptMiddleware::from_config
     );
-    register_middleware!(
-        bot,
-        "skills",
-        nekobot_skills::SkillConfig,
-        |c| nekobot_skills::SkillMiddleware::from_config(c).unwrap()
-    );
+    register_middleware!(bot, "skills", nekobot_skills::SkillConfig, |c| {
+        nekobot_skills::SkillMiddleware::from_config(c).unwrap()
+    });
     register_middleware!(
         bot,
         "tools",

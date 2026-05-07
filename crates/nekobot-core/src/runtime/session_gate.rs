@@ -93,9 +93,11 @@ impl SessionGate {
         sender_id: &str,
         password: &str,
     ) -> anyhow::Result<InterceptResult> {
-        let mut hasher = Sha256::new();
-        hasher.update(password.as_bytes());
-        let input_hash = format!("{:x}", hasher.finalize());
+        let input_hash = Sha256::digest(password.as_bytes())
+            .as_slice()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
 
         if input_hash == self.password_hash {
             SenderGateState {
@@ -107,7 +109,11 @@ impl SessionGate {
             .upsert(&self.conn)
             .await?;
 
-            let agents = if self.valid_agents.is_empty() { "（无可用 agent）".to_owned() } else { self.valid_agents.join(", ") };
+            let agents = if self.valid_agents.is_empty() {
+                "（无可用 agent）".to_owned()
+            } else {
+                self.valid_agents.join(", ")
+            };
             Ok(InterceptResult::Reject {
                 reply: format!("登录成功，请 /connect <agent> 选择要连接的 agent。可用: {agents}"),
             })
